@@ -1,0 +1,13 @@
+node_modules/
+dist/
+data/
+.git/
+.github/
+*.md
+.env
+*.env
+test-*.ts
+src/test-*.ts
+**/test-*.ts
+**/scratch/
+brain/

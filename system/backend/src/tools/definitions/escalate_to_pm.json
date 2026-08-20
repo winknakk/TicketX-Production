@@ -1,0 +1,70 @@
+{
+  "name": "escalate_to_pm",
+  "version": "2.0",
+  "description": "Silently hand the current conversation to an Admin when a human is requested or the answer cannot be supported by Project knowledge.",
+  "category": "tickets",
+  "owner": "platform-engineering",
+  "executionMode": "sync",
+  "requiredPermissions": ["escalate_to_pm"],
+  "backend": {
+    "method": "POST",
+    "endpoint": "/api/v1/webhooks/human_notify"
+  },
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "conversationId": { "type": "string", "description": "The authoritative current conversation ID" },
+      "ticketId": { "type": "string", "description": "Optional related ticket ID; do not create one solely for escalation" },
+      "reason": { "type": "string", "description": "Optional internal reason detail for the Admin" },
+      "reasonDetail": { "type": "string", "description": "Optional internal reason detail for the Admin" },
+      "reasonCode": {
+        "type": "string",
+        "enum": ["CUSTOMER_REQUESTED_HUMAN", "ANSWER_NOT_FOUND", "CONFLICTING_INFORMATION", "AUTHORITY_REQUIRED", "TOOL_FAILURE", "SAFETY_REVIEW"]
+      }
+    },
+    "required": ["conversationId", "reasonCode"]
+  },
+  "outputSchema": {
+    "type": "object",
+    "properties": {
+      "success": { "type": "boolean" },
+      "data": {
+        "type": "object",
+        "properties": {
+          "conversationId": { "type": "string" },
+          "ticketId": { "type": ["string", "null"] },
+          "escalated": { "type": "boolean" }
+        }
+      },
+      "error": { "type": "null" }
+    }
+  },
+  "events": {
+    "publish": ["TicketEscalated"],
+    "subscribe": []
+  },
+  "automationX": {
+    "flow": "nocodb-ticket-escalation",
+    "waitForEvents": [],
+    "nextEvents": ["TicketEscalated"]
+  },
+  "agentX": {
+    "reasoningHints": ["Use this tool when a ticket has urgent or unresolved SLAs, requires manual manager intervention, or when customer requests to speak to a manager."],
+    "memoryUsage": "none",
+    "requiresEnrichedTicket": false
+  },
+  "retryPolicy": {
+    "enabled": true,
+    "maxAttempts": 3,
+    "backoff": "exponential"
+  },
+  "idempotency": {
+    "enabled": false,
+    "key": ""
+  },
+  "observability": {
+    "metrics": ["escalate_to_pm_total", "escalate_to_pm_latency"],
+    "logs": ["Escalating conversation {conversationId} to Admin. Reason: {reasonCode}"],
+    "trace": true
+  }
+}

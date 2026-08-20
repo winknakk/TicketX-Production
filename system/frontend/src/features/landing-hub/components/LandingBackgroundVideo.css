@@ -1,0 +1,53 @@
+/* Absolute full-screen background layer */
+.landing-bg-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #ffffff;
+  pointer-events: none;
+}
+
+/* Video wrapper sizing */
+/* Mobile (<768px): 80% width and 80% height, centered */
+.landing-video-container {
+  position: relative;
+  width: 80%;
+  height: 80%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 20px;
+}
+
+/* Desktop (768px+): 100% width and 100% height full viewport */
+@media (min-width: 768px) {
+  .landing-video-container {
+    width: 100%;
+    height: 100%;
+    border-radius: 0;
+  }
+}
+
+.landing-video-motion-wrapper {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* Video element */
+.landing-video-element {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  display: block;
+}

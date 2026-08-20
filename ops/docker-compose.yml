@@ -1,0 +1,78 @@
+# ── TicketX Production Docker Compose ──
+version: '3.8'
+
+services:
+  # ── Reverse Proxy ──
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - ax-backend
+      - ax-frontend
+    restart: unless-stopped
+
+  # ── Backend API Server ──
+  ax-backend:
+    build:
+      context: ../system/backend
+      dockerfile: Dockerfile
+    env_file:
+      - .env.production
+    ports:
+      - "3000:3000"
+    depends_on:
+      pg-primary:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Frontend SPA ──
+  ax-frontend:
+    build:
+      context: ../system/frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:80"
+    restart: unless-stopped
+
+  # ── PostgreSQL Primary ──
+  pg-primary:
+    image: ankane/pgvector:v0.5.1
+    environment:
+      POSTGRES_DB: csdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secure_postgres_pass_2026}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ../system/backend/database/migrations:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d csdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Redis Cache & Queue ──
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pg-data:
+  redis-data:

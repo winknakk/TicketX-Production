@@ -1,0 +1,182 @@
+import { Ticket } from "../domain/entities/Ticket";
+import { PostgresTicketRepository } from "../infrastructure/db/PostgresTicketRepository";
+import { PostgresTicketEventRepository } from "../infrastructure/db/PostgresTicketEventRepository";
+import { TransactionManager } from "../shared/repositories/TransactionManager";
+import { UnitOfWork } from "../shared/repositories/UnitOfWork";
+import { ConfigLoaderService } from "../services/ConfigLoaderService";
+import { BackupManager } from "../adapters/postgres/BackupManager";
+import { BullMQEventPublisher } from "../infrastructure/queue/BullMQEventPublisher";
+import { TicketInput, ExecutionResult } from "../schemas/validation";
+import { DatabaseAdapter } from "../adapters/types";
+import { RuntimeContextResolver } from "../services/RuntimeContextResolver";
+import { mapPlanePriorityToTicketPriority } from "../services/planeWebhookService";
+
+export class TicketService {
+  private dbAdapter: DatabaseAdapter;
+  private txManager: TransactionManager;
+  private ticketRepo: PostgresTicketRepository;
+  private eventRepo: PostgresTicketEventRepository;
+  private uow: UnitOfWork;
+
+  constructor(dbAdapter: DatabaseAdapter) {
+    this.dbAdapter = dbAdapter;
+    this.txManager = new TransactionManager();
+    this.ticketRepo = new PostgresTicketRepository(this.txManager);
+    this.eventRepo = new PostgresTicketEventRepository(this.txManager);
+    this.uow = new UnitOfWork(this.txManager);
+  }
+
+  async createTicket(input: TicketInput): Promise<ExecutionResult> {
+    try {
+      let projectIdNum = parseInt(input.projectId, 10) || 1;
+      const conversationIdNum = parseInt(input.conversationId, 10);
+
+      if (!isNaN(conversationIdNum) && conversationIdNum > 0) {
+        try {
+          const contextResolver = new RuntimeContextResolver(this.dbAdapter);
+          const context = await contextResolver.resolveRuntimeContext(conversationIdNum);
+          if (context && context.projectId) {
+            projectIdNum = context.projectId;
+          }
+        } catch (err: any) {
+          console.error("Failed to resolve conversation context during ticket creation:", err.message);
+        }
+      }
+
+      // Only an active row can satisfy idempotency.
+      const existing = await this.ticketRepo.findActiveByConversationAndSubject(conversationIdNum, input.subject);
+      if (existing) {
+        return {
+          success: true,
+          data: {
+            id: existing.id.toString(),
+            ticketId: existing.ticketId,
+            conversationId: existing.conversationId.toString(),
+            subject: existing.subject,
+            summary: existing.summary,
+            severity: existing.severity,
+            priority: existing.priority,
+            projectId: existing.projectId?.toString() || input.projectId,
+            status: existing.status as any,
+            startDate: existing.createdAt.toISOString(),
+            dueDate: existing.dueDate?.toISOString() || null,
+            createdBy: existing.createdByName || existing.createdByType || "AI Support Agent",
+            enrichmentState: existing.enrichmentState,
+            aiConfidenceMetrics: existing.aiConfidenceMetrics,
+            created_by_type: existing.createdByType,
+            created_by_name: existing.createdByName,
+            diagnostic: (existing as any).diagnostic || undefined,
+          },
+          error: null,
+          source: "postgres_idempotent",
+          executionId: require("crypto").randomUUID()
+        };
+      }
+
+      // 1. Calculate SLA Due Date dynamically based on project SLA policies
+      let resolveHours = 120; // default fallback
+      try {
+        const configLoader = ConfigLoaderService.getInstance();
+        const projectId = input.projectId || "1";
+        const slaConfig = await configLoader.getSlaPolicy(projectId);
+        const policy = slaConfig.policies.find((p) => p.priority === input.priority);
+        if (policy) {
+          resolveHours = policy.resolveHours;
+        }
+      } catch (err: any) {
+        console.error("Failed to query resolve_hours dynamically for ticket creation SLA calculation:", err.message);
+      }
+
+      const startDate = new Date();
+      const dueDate = new Date(startDate.getTime() + resolveHours * 60 * 60 * 1000);
+
+      // 2. Generate Sequential Mock Ticket Number: TCK-YYYY-[5-digit random]
+      const currentYear = startDate.getFullYear();
+      const randomSuffix = Math.floor(10000 + Math.random() * 90000);
+      const ticketNumber = `TCK-${currentYear}-${randomSuffix}`;
+
+      const createdByType = input.createdByType || "HUMAN_AGENT";
+      const createdByName = input.createdByName || undefined;
+
+      const ticket = Ticket.create({
+        ticketId: ticketNumber,
+        conversationId: conversationIdNum,
+        projectId: projectIdNum,
+        subject: input.subject,
+        summary: input.summary,
+        status: "Backlog",
+        priority: mapPlanePriorityToTicketPriority(input.priority) || input.priority,
+        severity: input.severity,
+        dueDate,
+        createdAt: startDate,
+        createdVia: createdByType === "HUMAN_AGENT" || createdByType === "AGENT" ? "human" : "ai",
+        createdByType,
+        createdByName,
+      });
+
+      const eventPublisher = new BullMQEventPublisher();
+
+      await this.uow.execute(
+        async () => {
+          this.uow.registerAggregate(ticket);
+          await this.ticketRepo.save(ticket);
+          await this.eventRepo.saveEvents(ticket, "system", "AI", "Line");
+
+          // Write outbox event transactionally using active client
+          const outboxPayload = { ticketId: ticketNumber };
+          const client = this.txManager.getClient();
+          await client.query(
+            `INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload, status, attempts)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            ["Ticket", ticket.id.toString(), "TicketCreated", JSON.stringify(outboxPayload), "pending", 0]
+          );
+        },
+        async (events) => {
+          await eventPublisher.publish(events);
+        }
+      );
+
+      // Return matching interface
+      const resultData = {
+        id: ticket.id.toString(),
+        ticketId: ticketNumber,
+        conversationId: ticket.conversationId.toString(),
+        subject: ticket.subject,
+        summary: ticket.summary,
+        severity: ticket.severity,
+        priority: ticket.priority,
+        projectId: input.projectId,
+        status: ticket.status as any,
+        processingStatus: "PENDING_ENRICHMENT",
+        startDate: ticket.createdAt.toISOString(),
+        dueDate: dueDate.toISOString(),
+        createdBy: createdByName || createdByType,
+        created_by_type: createdByType,
+        created_by_name: createdByName || null,
+        enrichmentState: ticket.enrichmentState,
+        aiConfidenceMetrics: ticket.aiConfidenceMetrics,
+        diagnostic: input.diagnostic || undefined,
+      };
+
+      // Write to local encrypted backup
+      await BackupManager.saveToBackup("tickets", resultData, "id");
+
+      return {
+        success: true,
+        data: resultData,
+        error: null,
+        source: "postgres",
+        executionId: require("crypto").randomUUID(),
+      };
+    } catch (err: any) {
+      console.error("Failed to create ticket via Repository & UoW in TicketService:", err.message);
+      return {
+        success: false,
+        data: null,
+        error: err.message ?? "Unknown error creating ticket",
+        source: "postgres",
+        executionId: require("crypto").randomUUID(),
+      };
+    }
+  }
+}

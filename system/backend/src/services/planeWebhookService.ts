@@ -1,0 +1,444 @@
+import crypto from "crypto";
+import axios from "axios";
+import { DatabaseAdapter } from "../adapters/types";
+import { pool } from "../adapters/postgres/PostgresAdapter";
+import { config } from "../config/env";
+import { createLogger } from "../observability/logger";
+
+const logger = createLogger("planeWebhookService");
+
+export interface PlaneWebhookPayload {
+  event?: string;
+  action?: string;
+  workspace_id?: string;
+  data?: {
+    id?: string;
+    project?: string | { id?: string };
+    priority?: string | null;
+    completed_at?: string | null;
+    state?: string | { id?: string; name?: string; group?: string } | null;
+    state_detail?: { id?: string; name?: string; group?: string } | null;
+    state_name?: string | null;
+    state_group?: string | null;
+  };
+}
+
+export interface PlaneWebhookSyncResult {
+  processed: boolean;
+  matched: boolean;
+  deleted?: boolean;
+  reason?: string;
+  planeIssueId?: string;
+  status?: string;
+  priority?: string;
+}
+
+export interface PlaneMappingContext {
+  workspaceSlug?: string;
+  planeProjectId?: string;
+  apiBaseUrl?: string;
+  apiKey?: string;
+}
+
+export interface PlaneReverseSyncSummary {
+  checked: number;
+  updated: number;
+  deleted: number;
+  unlinked: number;
+  failed: number;
+}
+
+function canonicalStatusName(name: string): string {
+  const normalized = name.trim().toLowerCase().replace(/[\s_-]+/g, " ");
+  const known: Record<string, string> = {
+    backlog: "Backlog",
+    open: "Backlog",
+    todo: "Todo",
+    "to do": "Todo",
+    unstarted: "Todo",
+    started: "In Progress",
+    "in progress": "In Progress",
+    completed: "Done",
+    complete: "Done",
+    done: "Done",
+    resolved: "Done",
+    closed: "Done",
+    cancelled: "Cancelled",
+    canceled: "Cancelled",
+  };
+  return known[normalized] || name.trim();
+}
+
+export function mapPlaneStateToTicketStatus(state?: { name?: string; group?: string } | null): string | undefined {
+  if (!state) return undefined;
+  if (state.name?.trim()) return canonicalStatusName(state.name);
+
+  const groupMap: Record<string, string> = {
+    backlog: "Backlog",
+    unstarted: "Todo",
+    started: "In Progress",
+    completed: "Done",
+    cancelled: "Cancelled",
+    canceled: "Cancelled",
+  };
+  return state.group ? groupMap[state.group.trim().toLowerCase()] : undefined;
+}
+
+export function mapPlanePriorityToTicketPriority(priority?: string | null): string | undefined {
+  if (!priority) return undefined;
+  const priorityMap: Record<string, string> = {
+    urgent: "Urgent",
+    high: "High",
+    medium: "Medium",
+    low: "Low",
+    none: "None",
+  };
+  return priorityMap[priority.trim().toLowerCase()];
+}
+
+export function mapTicketPriorityToPlanePriority(priority?: string | null): string | undefined {
+  if (!priority) return undefined;
+  const priorityMap: Record<string, string> = {
+    p1: "urgent",
+    urgent: "urgent",
+    p2: "high",
+    high: "high",
+    p3: "medium",
+    medium: "medium",
+    p4: "low",
+    low: "low",
+    none: "none",
+  };
+  return priorityMap[priority.trim().toLowerCase()];
+}
+
+export function verifyPlaneWebhookSignature(
+  payload: unknown,
+  receivedSignature: string | undefined,
+  secret: string | undefined
+): boolean {
+  if (!secret || !receivedSignature || !/^[a-f0-9]{64}$/i.test(receivedSignature)) return false;
+
+  const expected = crypto.createHmac("sha256", secret).update(JSON.stringify(payload)).digest("hex");
+  const receivedBuffer = Buffer.from(receivedSignature, "hex");
+  const expectedBuffer = Buffer.from(expected, "hex");
+  return receivedBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(receivedBuffer, expectedBuffer);
+}
+
+export class PlaneWebhookService {
+  private readonly doneNotificationDispatcher: (planeIssueId: string) => Promise<void>;
+
+  constructor(
+    private readonly dbAdapter: DatabaseAdapter,
+    private readonly httpClient: Pick<typeof axios, "get"> = axios,
+    doneNotificationDispatcher?: (planeIssueId: string) => Promise<void>
+  ) {
+    this.doneNotificationDispatcher =
+      doneNotificationDispatcher || ((planeIssueId) => this.dispatchCustomerDoneNotification(planeIssueId));
+  }
+
+  async sync(payload: PlaneWebhookPayload, mappingContext?: PlaneMappingContext): Promise<PlaneWebhookSyncResult> {
+    const event = payload.event?.toLowerCase();
+    const action = payload.action?.toLowerCase();
+    if (
+      (event !== "issue" && event !== "work_item" && !event?.includes("updated") && !event?.includes("created") && !event?.includes("deleted")) ||
+      (action !== "update" && action !== "create" && action !== "delete" && !event)
+    ) {
+      return { processed: false, matched: false, reason: "unsupported_event" };
+    }
+
+    const data = payload.data;
+    const planeIssueId = data?.id;
+    if (!data || !planeIssueId) {
+      throw new Error("Plane webhook payload is missing data.id");
+    }
+
+    const payloadProjectId = typeof data.project === "string" ? data.project : data.project?.id;
+    const configuredProjectId = config.PLANE_PROJECT_ID;
+    if (
+      payloadProjectId &&
+      configuredProjectId &&
+      configuredProjectId !== "proj_id" &&
+      payloadProjectId !== configuredProjectId
+    ) {
+      // Allow sync if the ticket is already linked in our database
+      const isLinked = await pool
+        .query("SELECT 1 FROM tickets WHERE plane_issue_id = $1 LIMIT 1", [planeIssueId])
+        .then((res) => (res.rowCount || 0) > 0)
+        .catch(() => false);
+
+      if (!isLinked) {
+        return { processed: false, matched: false, reason: "project_mismatch", planeIssueId };
+      }
+    }
+
+    if (action === "delete" || event?.includes("delete")) {
+      if (!this.dbAdapter.deleteTicketFromPlane) {
+        return {
+          processed: false,
+          matched: false,
+          deleted: false,
+          reason: "delete_not_supported",
+          planeIssueId,
+        };
+      }
+      const deleted = await this.dbAdapter.deleteTicketFromPlane(planeIssueId);
+      return {
+        processed: true,
+        matched: deleted,
+        deleted,
+        reason: deleted ? undefined : "ticket_not_linked",
+        planeIssueId,
+      };
+    }
+
+    const state = await this.resolveState(data, payloadProjectId || configuredProjectId, mappingContext);
+    // Plane can set completed_at on a cancelled work item too. Prefer the
+    // explicit state so Cancelled never gets flattened into Done.
+    const status = mapPlaneStateToTicketStatus(state) || (data.completed_at ? "Done" : undefined);
+    const priority = mapPlanePriorityToTicketPriority(data.priority);
+    if (!status && !priority) {
+      return { processed: false, matched: false, reason: "no_supported_changes", planeIssueId };
+    }
+
+    const syncResult = await this.dbAdapter.syncTicketFromPlane(planeIssueId, { status, priority });
+
+    // Update Plane creator attribution if present
+    const creatorName = (data as any)?.created_by_detail?.display_name ||
+      (data as any)?.created_by_detail?.first_name ||
+      (typeof (data as any)?.created_by === "object" ? ((data as any)?.created_by?.first_name || (data as any)?.created_by?.display_name) : (data as any)?.created_by) ||
+      "Plane.io User";
+
+    try {
+      await pool.query(
+        `UPDATE tickets 
+         SET created_by_type = 'PLANE_IO', 
+             created_by_name = COALESCE($1, created_by_name, 'Plane.io User') 
+         WHERE plane_issue_id = $2 AND (created_by_type IS NULL OR created_by_type = 'CUSTOMER')`,
+        [creatorName, planeIssueId]
+      );
+    } catch (dbErr: any) {
+      logger.warn({ error: dbErr.message, planeIssueId }, "Could not update plane creator attribution");
+    }
+
+    if (syncResult.matched && syncResult.statusChanged && status === "Done") {
+      this.doneNotificationDispatcher(planeIssueId).catch((err) => {
+        logger.error({ error: err.message, planeIssueId }, "Failed to dispatch customer Done notification");
+      });
+    }
+
+    return {
+      processed: true,
+      matched: syncResult.matched,
+      reason: syncResult.matched ? undefined : "ticket_not_linked",
+      planeIssueId,
+      status,
+      priority,
+    };
+  }
+
+  private async dispatchCustomerDoneNotification(planeIssueId: string): Promise<void> {
+    try {
+      const { rows } = await pool.query(
+        `SELECT t.id, t.ticket_number, t.subject, t.conversation_id, c.channel, i.channel_ref
+         FROM tickets t
+         JOIN conversations c ON c.id = t.conversation_id
+         JOIN identities i ON i.id = c.identity_id
+         WHERE t.plane_issue_id = $1 LIMIT 1`,
+        [planeIssueId]
+      );
+
+      if (rows.length === 0) return;
+      const ticket = rows[0];
+      const notificationText = `🎉 Ticket #${ticket.ticket_number || ticket.id} เรื่อง “${ticket.subject}” ดำเนินการเสร็จเรียบร้อยแล้วค่ะ หากยังพบปัญหาอยู่ พิมพ์รายละเอียดเพิ่มเติมกลับมาได้เลยนะคะ`;
+
+      await this.dbAdapter.saveMessage(String(ticket.conversation_id), "ai", notificationText);
+
+      if (ticket.channel === "line" || ticket.channel === "line_group") {
+        const token = (config.LINE_CHANNEL_ACCESS_TOKEN || "").trim();
+        if (token && ticket.channel_ref && !ticket.channel_ref.startsWith("test_")) {
+          await axios.post(
+            "https://api.line.me/v2/bot/message/push",
+            {
+              to: ticket.channel_ref,
+              messages: [{ type: "text", text: notificationText }],
+            },
+            {
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${token}`,
+              },
+              timeout: 10000,
+            }
+          );
+        }
+      }
+    } catch (err: any) {
+      logger.error({ error: err.message, planeIssueId }, "Error sending customer Done notification");
+    }
+  }
+
+  async syncLinkedTicketsFromPlane(batchSize = config.PLANE_REVERSE_SYNC_BATCH_SIZE): Promise<PlaneReverseSyncSummary> {
+    const summary: PlaneReverseSyncSummary = { checked: 0, updated: 0, deleted: 0, unlinked: 0, failed: 0 };
+
+    try {
+      const mappingsRes = await pool.query(
+        `SELECT project_id, org_id, workspace_slug, plane_project_id, plane_api_base_url, credential_ref
+         FROM plane_workspace_mappings
+         WHERE enabled = TRUE AND archived_at IS NULL`
+      );
+
+      if (!mappingsRes.rows || mappingsRes.rows.length === 0) {
+        logger.info("No active Plane project mappings found for reverse sync");
+        return summary;
+      }
+
+      for (const mapping of mappingsRes.rows) {
+        const { project_id, org_id, workspace_slug, plane_project_id, plane_api_base_url, credential_ref } = mapping;
+
+        // Query tickets matching 3-key scope (workspace_slug, plane_project_id, plane_issue_id)
+        const ticketsRes = await pool.query(
+          `SELECT id, plane_issue_id, plane_workspace_slug, plane_project_id, project_id, org_id, ticket_number
+           FROM tickets
+           WHERE ((plane_workspace_slug = $1 AND plane_project_id = $2) OR project_id = $3)
+             AND plane_issue_id IS NOT NULL AND plane_issue_id != ''
+           LIMIT $4`,
+          [workspace_slug, plane_project_id, project_id, batchSize]
+        );
+
+        for (const ticket of ticketsRes.rows) {
+          const issueId = ticket.plane_issue_id;
+          if (!issueId || String(issueId).startsWith("mock-")) continue;
+
+          summary.checked += 1;
+          try {
+            const apiBase = (plane_api_base_url || config.PLANE_API_URL || "https://projects.oneweb.tech").replace(/\/+$/, "");
+            const url = `${apiBase}/api/v1/workspaces/${encodeURIComponent(workspace_slug)}/projects/${encodeURIComponent(plane_project_id)}/work-items/${encodeURIComponent(issueId)}/`;
+            const apiKey = credential_ref.startsWith("env:") ? (process.env[credential_ref.slice(4)] || config.PLANE_API_KEY) : credential_ref;
+
+            const response = await this.httpClient.get(url, {
+              headers: { "X-API-Key": apiKey },
+              timeout: 5000,
+            });
+
+            const syncRes = await this.sync(
+              {
+                event: "work_item.updated",
+                data: {
+                  id: issueId,
+                  project: plane_project_id,
+                  ...response.data,
+                },
+              },
+              {
+                workspaceSlug: workspace_slug,
+                planeProjectId: plane_project_id,
+                apiBaseUrl: apiBase,
+                apiKey: apiKey,
+              }
+            );
+
+            if (syncRes.matched) summary.updated += 1;
+          } catch (err: any) {
+            const isAbsentOrDeleted =
+              err.response?.status === 404 ||
+              err.response?.status === 410 ||
+              (err.response?.status === 403 &&
+                typeof err.response?.data?.detail === "string" &&
+                (err.response.data.detail.includes("permission to view this workitem") ||
+                  err.response.data.detail.includes("not found")));
+
+            if (isAbsentOrDeleted) {
+              try {
+                const deleted = this.dbAdapter.deleteTicketFromPlane
+                  ? await this.dbAdapter.deleteTicketFromPlane(issueId)
+                  : false;
+                if (deleted) {
+                  summary.deleted += 1;
+                  logger.info({ issueId, ticketId: ticket.id, ticketNumber: ticket.ticket_number }, "Deleted ticket from DB because Plane work item was removed (404/403 absent)");
+                } else {
+                  summary.unlinked += 1;
+                }
+              } catch (delErr: any) {
+                logger.error({ error: delErr.message, issueId }, "Failed to delete ticket from DB on Plane 404/403 absent");
+                summary.failed += 1;
+              }
+            } else {
+              summary.failed += 1;
+            }
+          }
+        }
+      }
+    } catch (err: any) {
+      logger.error({ error: err.message }, "Failed to execute multi-project reverse sync query");
+    }
+
+    return summary;
+  }
+
+  private async resolveState(
+    data: NonNullable<PlaneWebhookPayload["data"]>,
+    projectId?: string,
+    mappingContext?: PlaneMappingContext
+  ): Promise<{ name?: string; group?: string } | undefined> {
+    if (data.state_detail) return data.state_detail;
+    if (typeof data.state === "object" && data.state) return data.state;
+    if (data.state_name || data.state_group) {
+      return { name: data.state_name || undefined, group: data.state_group || undefined };
+    }
+    if (!data.state || typeof data.state !== "string") return undefined;
+
+    let ws = mappingContext?.workspaceSlug;
+    let proj = mappingContext?.planeProjectId || projectId;
+    let apiBase = mappingContext?.apiBaseUrl;
+    let apiKey = mappingContext?.apiKey;
+
+    // Look up mapping from database if context is missing
+    if (!ws || !apiKey) {
+      try {
+        const mappingRes = await pool.query(
+          `SELECT workspace_slug, plane_project_id, plane_api_base_url, credential_ref
+           FROM plane_workspace_mappings
+           WHERE (plane_project_id = $1 OR workspace_slug = $2) AND enabled = TRUE
+           LIMIT 1`,
+          [proj || "", ws || ""]
+        );
+        if (mappingRes.rows.length > 0) {
+          const row = mappingRes.rows[0];
+          ws = ws || row.workspace_slug;
+          proj = proj || row.plane_project_id;
+          apiBase = apiBase || row.plane_api_base_url;
+          const ref = row.credential_ref;
+          if (ref) {
+            apiKey = apiKey || (ref.startsWith("env:") ? process.env[ref.slice(4)] : ref);
+          }
+        }
+      } catch {
+        // ignore and fallback
+      }
+    }
+
+    ws = ws || config.PLANE_WORKSPACE_SLUG;
+    proj = proj || config.PLANE_PROJECT_ID;
+    apiBase = (apiBase || config.PLANE_API_URL || "https://projects.oneweb.tech").replace(/\/+$/, "");
+    apiKey = apiKey || config.PLANE_API_KEY;
+
+    if (
+      !apiKey ||
+      apiKey === "plane_mock_key" ||
+      !proj ||
+      proj === "proj_id" ||
+      !ws ||
+      ws === "ws_id"
+    ) {
+      throw new Error("Plane state lookup is not configured");
+    }
+
+    const url = `${apiBase}/api/v1/workspaces/${encodeURIComponent(ws)}/projects/${encodeURIComponent(proj)}/states/${encodeURIComponent(data.state)}/`;
+    const response = await this.httpClient.get(url, {
+      headers: { "X-API-Key": apiKey },
+      timeout: 5000,
+    });
+    return { name: response.data?.name, group: response.data?.group };
+  }
+}

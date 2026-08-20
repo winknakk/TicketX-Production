@@ -1,0 +1,67 @@
+{
+  "name": "update_summary",
+  "version": "2.0",
+  "description": "Update a Ticket only for an explicitly identified same-incident follow-up; never append a newly reported failure.",
+  "category": "tickets",
+  "owner": "platform-engineering",
+  "executionMode": "sync",
+  "requiredPermissions": ["update_summary"],
+  "backend": {
+    "method": "POST",
+    "endpoint": "/api/v1/internal/tickets/update-summary"
+  },
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "ticketId": { "type": "string", "description": "The ticket readable ID or database serial ID" },
+      "runningSummary": { "type": "string", "description": "Compatibility context only. The backend preserves the stored history and never replaces it with this value." },
+      "lastAiSummary": { "type": "string", "description": "Only the newest customer-provided detail from this follow-up. The backend appends it as one history bullet and ignores duplicate retries." }
+    },
+    "required": ["ticketId", "runningSummary", "lastAiSummary"]
+  },
+  "outputSchema": {
+    "type": "object",
+    "properties": {
+      "success": { "type": "boolean" },
+      "data": {
+        "type": "object",
+        "properties": {
+          "ticketId": { "type": "string" },
+          "updated": { "type": "boolean" },
+          "planeSynced": { "type": "boolean", "description": "True when the linked Plane work item was updated" },
+          "planeIssueId": { "type": "string", "description": "Linked Plane work item ID when synchronized" },
+          "planeSyncReason": { "type": "string", "enum": ["not_linked"], "description": "Why Plane was not updated" }
+        }
+      },
+      "error": { "type": "null" }
+    }
+  },
+  "events": {
+    "publish": ["TicketSummaryUpdated"],
+    "subscribe": []
+  },
+  "automationX": {
+    "flow": "nocodb-ticket-update-summary",
+    "waitForEvents": [],
+    "nextEvents": ["TicketSummaryUpdated"]
+  },
+  "agentX": {
+    "reasoningHints": ["Use only when the customer explicitly identifies the same existing Ticket. Different error codes, systems/modules, primary symptoms, or impacts without an explicit same-Ticket reference require create_ticket.", "Claim an update only when this tool returns success=true. If the explicitly referenced Ticket is missing, deleted, or terminal, never create a replacement Ticket as fallback; report that it could not be updated and follow the tool-failure handoff policy.", "A linked Plane work item is updated after the TicketX summary is saved; inspect planeSynced in the result."],
+    "memoryUsage": "conversational",
+    "requiresEnrichedTicket": false
+  },
+  "retryPolicy": {
+    "enabled": true,
+    "maxAttempts": 3,
+    "backoff": "exponential"
+  },
+  "idempotency": {
+    "enabled": false,
+    "key": ""
+  },
+  "observability": {
+    "metrics": ["update_summary_total", "update_summary_latency"],
+    "logs": ["Updating summary for ticket {ticketId}"],
+    "trace": true
+  }
+}

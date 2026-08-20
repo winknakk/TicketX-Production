@@ -1,0 +1,18 @@
+# ── AX-INFRA-002: AutomationX V3 Worker Dockerfile ──
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --omit=dev
+COPY . .
+RUN npx tsc --outDir dist
+
+FROM node:20-alpine
+WORKDIR /app
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./
+COPY --from=builder /app/database ./database
+COPY --from=builder /app/data ./data
+ENV NODE_ENV=production
+# Worker does not expose HTTP — it connects to Redis and polls BullMQ
+CMD ["node", "dist/api/server.js"]

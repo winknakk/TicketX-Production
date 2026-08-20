@@ -1,0 +1,21 @@
+# 1. Dependency Directories
+node_modules/
+dist/
+build/
+tmp/
+uploads/
+
+# 2. Local Environment & Secrets
+.env
+.env.*
+!.env.example
+!.env.production.template
+*.pem
+*.key
+
+# 3. Binaries & OS Files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log

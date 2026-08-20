@@ -1,0 +1,115 @@
+/* Fixed Navbar Root */
+.landing-navbar-root {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px;
+  pointer-events: none; /* Allows click-through to background where elements don't exist */
+}
+
+@media (min-width: 768px) {
+  .landing-navbar-root {
+    padding: 24px 32px;
+  }
+}
+
+/* Left Section containing interactive items */
+.landing-navbar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  pointer-events: auto; /* Re-enable pointer events for interactive elements */
+}
+
+@media (min-width: 768px) {
+  .landing-navbar-left {
+    gap: 16px;
+  }
+}
+
+/* Brand Section */
+.landing-brand-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  user-select: none;
+  cursor: pointer;
+}
+
+.landing-brand-text {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 15px;
+  font-weight: 600;
+  color: #000000;
+  letter-spacing: -0.02em;
+  display: none; /* Hidden on mobile */
+}
+
+@media (min-width: 768px) {
+  .landing-brand-text {
+    display: inline-block;
+  }
+}
+
+/* Tag Pills Container */
+.landing-tags-wrapper {
+  display: none; /* Hidden on mobile */
+}
+
+@media (min-width: 768px) {
+  .landing-tags-wrapper {
+    display: flex;
+    align-items: center;
+  }
+}
+
+.landing-tags-container {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background-color: #f4f4f6;
+  border-radius: 9999px;
+  padding: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.04);
+}
+
+/* Individual Tag Pill */
+.landing-tag-pill {
+  background: transparent;
+  border: none;
+  border-radius: 9999px;
+  padding: 5px 14px;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 13px;
+  font-weight: 400;
+  color: #555555;
+  cursor: pointer;
+  outline: none;
+  transition: all 0.18s ease;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+
+.landing-tag-pill:hover {
+  color: #000000;
+  background-color: rgba(255, 255, 255, 0.6);
+}
+
+.landing-tag-pill.is-active {
+  background-color: #ffffff;
+  color: #000000;
+  font-weight: 500;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+
+/* Empty right navbar */
+.landing-navbar-right {
+  display: flex;
+  align-items: center;
+  pointer-events: auto;
+}
