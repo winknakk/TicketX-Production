@@ -68,6 +68,7 @@ export function CustomerPortal() {
   const [takeoverActive, setTakeoverActive] = useState(false);
 
   const socketRef = useRef<WebSocket | null>(null);
+  const sendQueueRef = useRef<string[]>([]);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const isMountedRef = useRef(true);
 
@@ -114,12 +115,21 @@ export function CustomerPortal() {
 
           // Connect WebSocket immediately
           const wsUrl = `${wsProtocol}//${wsHost}/api/v1/webchat/socket?token=${data.token}`;
-          ws = new WebSocket(wsUrl);
-          socketRef.current = ws;
+          const activeWs = new WebSocket(wsUrl);
+          ws = activeWs;
+          socketRef.current = activeWs;
 
-          ws.onopen = () => {
+          activeWs.onopen = () => {
             if (!isMounted) return;
             setIsConnected(true);
+            console.log('[CustomerPortal] WebSocket connection established');
+            while (sendQueueRef.current.length > 0) {
+              const msg = sendQueueRef.current.shift();
+              if (msg && activeWs.readyState === WebSocket.OPEN) {
+                console.log('[CustomerPortal] Flushing queued message to WebSocket');
+                activeWs.send(msg);
+              }
+            }
           };
 
           ws.onmessage = (event) => {
@@ -233,15 +243,17 @@ export function CustomerPortal() {
     const userMsg = inputMsg.trim();
     const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const tempId = `temp_${Date.now()}`;
+    const payload = JSON.stringify({ text: userMsg, tempId });
 
     setChatMessages((prev) => [...prev, { id: tempId, sender: 'user', text: userMsg, time }]);
     setInputMsg('');
     setIsAgentTyping(true);
 
     if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify({ text: userMsg, tempId }));
+      socketRef.current.send(payload);
     } else {
-      console.warn('WebSocket not open, readyState:', socketRef.current?.readyState);
+      console.log('[CustomerPortal] WebSocket connecting, queued message for delivery');
+      sendQueueRef.current.push(payload);
     }
   };
 
