@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   MessageSquare, 
   Ticket, 
@@ -10,7 +10,11 @@ import {
   RefreshCw,
   ShieldCheck,
   Zap,
-  Filter
+  Filter,
+  Bot,
+  User,
+  AlertTriangle,
+  Radio
 } from 'lucide-react';
 import { Button, PageHeader, SearchField, StatusBadge } from '../components/ui/Primitives';
 
@@ -25,6 +29,13 @@ export interface PortalTicket {
   due_date?: string;
   created_at: string;
   org_id?: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  sender: 'user' | 'bot' | 'human';
+  text: string;
+  time: string;
 }
 
 export function CustomerPortal() {
@@ -42,15 +53,146 @@ export function CustomerPortal() {
   const [submitting, setSubmitting] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
 
-  // Chat State
-  const [chatMessages, setChatMessages] = useState<Array<{ sender: 'user' | 'bot'; text: string; time: string }>>([
+  // Live WebChat AI State
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
+      id: 'init_welcome',
       sender: 'bot',
       text: 'สวัสดีค่ะ! ยินดีต้อนรับสู่ TicketX Customer Support Portal มีเรื่องใดให้ระบบหรือแอดมินดูแลวันนี้คะ?',
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     }
   ]);
   const [inputMsg, setInputMsg] = useState('');
+  const [isConnected, setIsConnected] = useState(false);
+  const [isAgentTyping, setIsAgentTyping] = useState(false);
+  const [takeoverActive, setTakeoverActive] = useState(false);
+
+  const socketRef = useRef<WebSocket | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const isMountedRef = useRef(true);
+
+  const apiBaseUrl = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:3000').replace(/\/$/, '');
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsHost = apiBaseUrl.replace(/^https?:\/\//, '');
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [chatMessages, isAgentTyping]);
+
+  // Connect to WebChat Gateway & WebSocket
+  useEffect(() => {
+    isMountedRef.current = true;
+    let ws: WebSocket | null = null;
+
+    const initWebChat = async () => {
+      try {
+        const activeOrgId = localStorage.getItem('active_org_id') || 'org_default';
+        const guestUuidKey = `ticketx_portal_guest_uuid_${activeOrgId}`;
+        let guestUuid = localStorage.getItem(guestUuidKey);
+        if (!guestUuid) {
+          guestUuid = `guest_${Math.random().toString(36).substring(2, 11)}`;
+          localStorage.setItem(guestUuidKey, guestUuid);
+        }
+
+        const res = await fetch(`${apiBaseUrl}/api/v1/webchat/handshake`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            projectId: '1',
+            guestUuid
+          })
+        });
+
+        if (!isMountedRef.current) return;
+        const data = await res.json();
+        if (data.token) {
+          setIsConnected(true);
+
+          // Fetch message history
+          try {
+            const histRes = await fetch(`${apiBaseUrl}/api/v1/webchat/messages`, {
+              headers: { Authorization: `Bearer ${data.token}` }
+            });
+            const histData = await histRes.json();
+            if (histData.messages && Array.isArray(histData.messages) && histData.messages.length > 0) {
+              const parsed = histData.messages.map((m: any) => ({
+                id: m.id || String(Math.random()),
+                sender: m.role === 'customer' ? 'user' : m.role === 'human' ? 'human' : 'bot',
+                text: m.content || m.text || '',
+                time: new Date(m.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+              }));
+              setChatMessages((prev) => [prev[0], ...parsed]);
+              if (histData.messages.some((m: any) => m.role === 'human')) {
+                setTakeoverActive(true);
+              }
+            }
+          } catch (e) {
+            console.warn('Could not fetch message history:', e);
+          }
+
+          // Connect WebSocket
+          const wsUrl = `${wsProtocol}//${wsHost}/api/v1/webchat/socket?token=${data.token}`;
+          ws = new WebSocket(wsUrl);
+          socketRef.current = ws;
+
+          ws.onopen = () => {
+            if (!isMountedRef.current) return;
+            setIsConnected(true);
+          };
+
+          ws.onmessage = (event) => {
+            if (!isMountedRef.current) return;
+            try {
+              const payload = JSON.parse(event.data);
+              if (payload.event === 'message') {
+                const msgData = payload.data;
+                const senderRole = msgData.role === 'customer' ? 'user' : msgData.role === 'human' ? 'human' : 'bot';
+                setChatMessages((prev) => {
+                  if (senderRole === 'user' && prev.some((p) => p.text === msgData.content && p.sender === 'user')) {
+                    return prev;
+                  }
+                  return [
+                    ...prev,
+                    {
+                      id: msgData.id || String(Math.random()),
+                      sender: senderRole,
+                      text: msgData.content,
+                      time: new Date(msgData.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                    }
+                  ];
+                });
+                setIsAgentTyping(false);
+                if (msgData.role === 'human') setTakeoverActive(true);
+              } else if (payload.event === 'typing') {
+                setIsAgentTyping(!!payload.data?.isTyping);
+              }
+            } catch (err) {
+              console.error('Socket message parse error:', err);
+            }
+          };
+
+          ws.onclose = () => {
+            if (!isMountedRef.current) return;
+            setIsConnected(false);
+          };
+        }
+      } catch (err) {
+        console.warn('WebChat Gateway connection error:', err);
+        setIsConnected(false);
+      }
+    };
+
+    initWebChat();
+
+    return () => {
+      isMountedRef.current = false;
+      if (ws) ws.close();
+    };
+  }, []);
 
   const fetchTickets = async () => {
     setLoading(true);
@@ -74,23 +216,34 @@ export function CustomerPortal() {
     fetchTickets();
   }, []);
 
-  const handleSendChat = () => {
+  const handleSendChat = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     if (!inputMsg.trim()) return;
     const userMsg = inputMsg.trim();
     const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    setChatMessages((prev) => [...prev, { sender: 'user', text: userMsg, time }]);
-    setInputMsg('');
+    const tempId = `temp_${Date.now()}`;
 
-    setTimeout(() => {
-      setChatMessages((prev) => [
-        ...prev,
-        {
-          sender: 'bot',
-          text: `รับทราบค่ะ ระบบกำลังประมวลผลคำขอ "${userMsg}" และสร้างตั๋วงานเข้าสู่ระบบให้ท่านทันที`,
-          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        }
-      ]);
-    }, 1000);
+    setChatMessages((prev) => [...prev, { id: tempId, sender: 'user', text: userMsg, time }]);
+    setInputMsg('');
+    setIsAgentTyping(true);
+
+    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify({ text: userMsg, tempId }));
+    } else {
+      // Offline / Fallback response if WebSocket is disconnected
+      setTimeout(() => {
+        setChatMessages((prev) => [
+          ...prev,
+          {
+            id: `fallback_${Date.now()}`,
+            sender: 'bot',
+            text: `รับทราบค่ะ ระบบได้รับข้อความ "${userMsg}" และกำลังประสานงานให้แอดมินดูแลทันที`,
+            time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          }
+        ]);
+        setIsAgentTyping(false);
+      }, 1000);
+    }
   };
 
   const handleCreateTicket = async (e: React.FormEvent) => {
@@ -182,19 +335,44 @@ export function CustomerPortal() {
         <div className="rounded-xl border border-border bg-card overflow-hidden flex flex-col h-[600px] shadow-sm">
           <div className="p-4 border-b border-border bg-muted/40 flex items-center justify-between">
             <div className="flex items-center gap-2.5">
-              <span className="h-2 w-2 rounded-full bg-success animate-pulse" />
-              <span className="text-xs font-bold text-foreground">AI Assistant & Live Support Queue</span>
+              <span className={`h-2.5 w-2.5 rounded-full ${isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
+              <div>
+                <span className="text-xs font-bold text-foreground">
+                  AI Assistant & Live Support Queue
+                </span>
+                <span className="text-[10px] text-muted-foreground ml-2">
+                  {isConnected ? '• WebChat Gateway Live' : '• Connecting Gateway...'}
+                </span>
+              </div>
             </div>
-            <StatusBadge tone="information">Response SLA &lt; 5 mins</StatusBadge>
+            <div className="flex items-center gap-2">
+              {takeoverActive && (
+                <span className="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 text-[10px] font-bold border border-amber-500/20 flex items-center gap-1">
+                  <AlertTriangle className="h-3 w-3" /> Human Agent Active
+                </span>
+              )}
+              <StatusBadge tone="information">Response SLA &lt; 5 mins</StatusBadge>
+            </div>
           </div>
 
           <div className="flex-1 p-4 overflow-y-auto space-y-4 bg-muted/10">
-            {chatMessages.map((msg, idx) => (
-              <div key={idx} className={`flex flex-col ${msg.sender === 'user' ? 'items-end' : 'items-start'}`}>
+            {chatMessages.map((msg) => (
+              <div key={msg.id} className={`flex flex-col ${msg.sender === 'user' ? 'items-end' : 'items-start'}`}>
+                <div className="flex items-center gap-1.5 mb-1 px-1 text-[10px] text-muted-foreground font-semibold">
+                  {msg.sender === 'user' ? (
+                    <><span>You</span><User className="h-3 w-3" /></>
+                  ) : msg.sender === 'human' ? (
+                    <><span className="text-amber-600 dark:text-amber-400 font-bold">Support Agent (Human)</span></>
+                  ) : (
+                    <><Bot className="h-3 w-3 text-primary" /><span className="text-primary font-bold">AI Support Assistant</span></>
+                  )}
+                </div>
                 <div
                   className={`max-w-lg p-3.5 rounded-xl text-xs leading-relaxed ${
                     msg.sender === 'user'
                       ? 'bg-primary text-primary-foreground rounded-br-none shadow-sm'
+                      : msg.sender === 'human'
+                      ? 'bg-amber-500/10 text-foreground border border-amber-500/30 rounded-bl-none shadow-xs'
                       : 'bg-card text-card-foreground border border-border rounded-bl-none shadow-xs'
                   }`}
                 >
@@ -203,21 +381,32 @@ export function CustomerPortal() {
                 <span className="text-[10px] text-muted-foreground mt-1 px-1">{msg.time}</span>
               </div>
             ))}
+
+            {isAgentTyping && (
+              <div className="flex flex-col items-start">
+                <div className="p-3 rounded-xl bg-card border border-border rounded-bl-none flex items-center gap-1.5 shadow-xs">
+                  <span className="h-1.5 w-1.5 rounded-full bg-primary animate-bounce [animation-delay:-0.3s]" />
+                  <span className="h-1.5 w-1.5 rounded-full bg-primary animate-bounce [animation-delay:-0.15s]" />
+                  <span className="h-1.5 w-1.5 rounded-full bg-primary animate-bounce" />
+                  <span className="text-[10px] text-muted-foreground ml-1">AI Assistant กำลังพิมพ์คำตอบ...</span>
+                </div>
+              </div>
+            )}
+            <div ref={messagesEndRef} />
           </div>
 
-          <div className="p-3 border-t border-border bg-card flex items-center gap-2">
+          <form onSubmit={handleSendChat} className="p-3 border-t border-border bg-card flex items-center gap-2">
             <input
               type="text"
               value={inputMsg}
               onChange={(e) => setInputMsg(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleSendChat()}
-              placeholder="พิมพ์ข้อความคำขอของคุณที่นี่..."
+              placeholder="พิมพ์ข้อความเพื่อสนทนากับ AI หรือแจ้งปัญหาที่นี่..."
               className="flex-1 rounded-lg border border-border bg-background px-3.5 py-2.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
             />
-            <Button onClick={handleSendChat} className="px-4 py-2 text-xs">
+            <Button type="submit" disabled={!inputMsg.trim()} className="px-4 py-2 text-xs">
               <Send className="h-3.5 w-3.5" /> ส่งข้อความ
             </Button>
-          </div>
+          </form>
         </div>
       )}
 
