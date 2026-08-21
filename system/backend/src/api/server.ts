@@ -321,8 +321,8 @@ fastify.addHook("onRequest", (request, reply, done) => {
 
 fastify.addHook("onRequest", async (request, reply) => {
   reply.header("Access-Control-Allow-Origin", "*");
-  reply.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-  reply.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  reply.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
+  reply.header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Org-Id, x-org-id, X-Identity-Id, x-identity-id, X-Project-Id, x-project-id, x-correlation-id, *");
   if (request.method === "OPTIONS") {
     return reply.code(200).send();
   }
