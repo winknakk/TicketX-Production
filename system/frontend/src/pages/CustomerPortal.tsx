@@ -85,10 +85,10 @@ export function CustomerPortal() {
 
   // Connect to WebChat Gateway & WebSocket
   useEffect(() => {
-    isMountedRef.current = true;
+    let isMounted = true;
     let ws: WebSocket | null = null;
 
-    const initWebChat = async () => {
+    const connectWebChat = async () => {
       try {
         const activeOrgId = localStorage.getItem('active_org_id') || 'org_default';
         const guestUuidKey = `ticketx_portal_guest_uuid_${activeOrgId}`;
@@ -107,7 +107,7 @@ export function CustomerPortal() {
           })
         });
 
-        if (!isMountedRef.current) return;
+        if (!isMounted) return;
         const data = await res.json();
         if (data.token) {
           // Connect WebSocket immediately
@@ -116,12 +116,12 @@ export function CustomerPortal() {
           socketRef.current = ws;
 
           ws.onopen = () => {
-            if (!isMountedRef.current) return;
+            if (!isMounted) return;
             setIsConnected(true);
           };
 
           ws.onmessage = (event) => {
-            if (!isMountedRef.current) return;
+            if (!isMounted) return;
             try {
               const payload = JSON.parse(event.data);
               if (payload.event === 'message') {
@@ -152,15 +152,15 @@ export function CustomerPortal() {
           };
 
           ws.onerror = () => {
-            if (!isMountedRef.current) return;
+            if (!isMounted) return;
             setIsConnected(false);
           };
 
           ws.onclose = () => {
-            if (!isMountedRef.current) return;
+            if (!isMounted) return;
             setIsConnected(false);
             setTimeout(() => {
-              if (isMountedRef.current) initWebChat();
+              if (isMounted) connectWebChat();
             }, 3000);
           };
 
@@ -170,7 +170,7 @@ export function CustomerPortal() {
           })
           .then((r) => r.json())
           .then((histData) => {
-            if (!isMountedRef.current) return;
+            if (!isMounted) return;
             if (histData.messages && Array.isArray(histData.messages) && histData.messages.length > 0) {
               const parsed = histData.messages.map((m: any) => ({
                 id: m.id || String(Math.random()),
@@ -188,17 +188,17 @@ export function CustomerPortal() {
         }
       } catch (err) {
         console.warn('WebChat Gateway connection error:', err);
-        setIsConnected(false);
-        setTimeout(() => {
-          if (isMountedRef.current) initWebChat();
-        }, 4000);
+        if (isMounted) {
+          setIsConnected(false);
+          setTimeout(connectWebChat, 4000);
+        }
       }
     };
 
-    initWebChat();
+    connectWebChat();
 
     return () => {
-      isMountedRef.current = false;
+      isMounted = false;
       if (ws) ws.close();
     };
   }, []);
@@ -238,6 +238,8 @@ export function CustomerPortal() {
 
     if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
       socketRef.current.send(JSON.stringify({ text: userMsg, tempId }));
+    } else {
+      console.warn('WebSocket not open, readyState:', socketRef.current?.readyState);
     }
   };
 
