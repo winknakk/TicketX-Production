@@ -110,31 +110,7 @@ export function CustomerPortal() {
         if (!isMountedRef.current) return;
         const data = await res.json();
         if (data.token) {
-          setIsConnected(true);
-
-          // Fetch message history
-          try {
-            const histRes = await fetch(`${apiBaseUrl}/api/v1/webchat/messages`, {
-              headers: { Authorization: `Bearer ${data.token}` }
-            });
-            const histData = await histRes.json();
-            if (histData.messages && Array.isArray(histData.messages) && histData.messages.length > 0) {
-              const parsed = histData.messages.map((m: any) => ({
-                id: m.id || String(Math.random()),
-                sender: m.role === 'customer' ? 'user' : m.role === 'human' ? 'human' : 'bot',
-                text: m.content || m.text || '',
-                time: new Date(m.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-              }));
-              setChatMessages((prev) => [prev[0], ...parsed]);
-              if (histData.messages.some((m: any) => m.role === 'human')) {
-                setTakeoverActive(true);
-              }
-            }
-          } catch (e) {
-            console.warn('Could not fetch message history:', e);
-          }
-
-          // Connect WebSocket
+          // Connect WebSocket immediately
           const wsUrl = `${wsProtocol}//${wsHost}/api/v1/webchat/socket?token=${data.token}`;
           ws = new WebSocket(wsUrl);
           socketRef.current = ws;
@@ -183,11 +159,32 @@ export function CustomerPortal() {
           ws.onclose = () => {
             if (!isMountedRef.current) return;
             setIsConnected(false);
-            // Auto reconnect after 3 seconds
             setTimeout(() => {
               if (isMountedRef.current) initWebChat();
             }, 3000);
           };
+
+          // Fetch message history in background
+          fetch(`${apiBaseUrl}/api/v1/webchat/messages`, {
+            headers: { Authorization: `Bearer ${data.token}` }
+          })
+          .then((r) => r.json())
+          .then((histData) => {
+            if (!isMountedRef.current) return;
+            if (histData.messages && Array.isArray(histData.messages) && histData.messages.length > 0) {
+              const parsed = histData.messages.map((m: any) => ({
+                id: m.id || String(Math.random()),
+                sender: m.role === 'customer' ? 'user' : m.role === 'human' ? 'human' : 'bot',
+                text: m.content || m.text || '',
+                time: new Date(m.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+              }));
+              setChatMessages((prev) => [prev[0], ...parsed]);
+              if (histData.messages.some((m: any) => m.role === 'human')) {
+                setTakeoverActive(true);
+              }
+            }
+          })
+          .catch((e) => console.warn('Could not fetch message history:', e));
         }
       } catch (err) {
         console.warn('WebChat Gateway connection error:', err);
@@ -241,20 +238,6 @@ export function CustomerPortal() {
 
     if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
       socketRef.current.send(JSON.stringify({ text: userMsg, tempId }));
-    } else {
-      // Offline / Fallback response if WebSocket is disconnected
-      setTimeout(() => {
-        setChatMessages((prev) => [
-          ...prev,
-          {
-            id: `fallback_${Date.now()}`,
-            sender: 'bot',
-            text: `รับทราบค่ะ ระบบได้รับข้อความ "${userMsg}" และกำลังประสานงานให้แอดมินดูแลทันที`,
-            time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-          }
-        ]);
-        setIsAgentTyping(false);
-      }, 1000);
     }
   };
 
