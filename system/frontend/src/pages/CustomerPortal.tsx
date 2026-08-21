@@ -175,14 +175,26 @@ export function CustomerPortal() {
             }
           };
 
+          ws.onerror = () => {
+            if (!isMountedRef.current) return;
+            setIsConnected(false);
+          };
+
           ws.onclose = () => {
             if (!isMountedRef.current) return;
             setIsConnected(false);
+            // Auto reconnect after 3 seconds
+            setTimeout(() => {
+              if (isMountedRef.current) initWebChat();
+            }, 3000);
           };
         }
       } catch (err) {
         console.warn('WebChat Gateway connection error:', err);
         setIsConnected(false);
+        setTimeout(() => {
+          if (isMountedRef.current) initWebChat();
+        }, 4000);
       }
     };
 
@@ -198,7 +210,7 @@ export function CustomerPortal() {
     setLoading(true);
     try {
       const orgId = localStorage.getItem('active_org_id') || 'org_default';
-      const res = await fetch('/api/portal/tickets', {
+      const res = await fetch(`${apiBaseUrl}/api/portal/tickets`, {
         headers: { 'X-Org-Id': orgId }
       });
       const data = await res.json();
@@ -254,7 +266,7 @@ export function CustomerPortal() {
 
     try {
       const orgId = localStorage.getItem('active_org_id') || 'org_default';
-      const res = await fetch('/api/portal/tickets', {
+      const res = await fetch(`${apiBaseUrl}/api/portal/tickets`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

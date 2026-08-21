@@ -294,6 +294,7 @@ export default function App() {
             fetchConversations(true);
           } catch { /* Ignore malformed socket events without disrupting the workspace. */ }
         };
+        socket.onerror = () => {};
         socket.onclose = () => { if (!disposed) reconnectTimer = window.setTimeout(connect, 5000); };
       } catch { if (!disposed) reconnectTimer = window.setTimeout(connect, 5000); }
     };
