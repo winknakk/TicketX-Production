@@ -110,6 +110,8 @@ export function CustomerPortal() {
         if (!isMounted) return;
         const data = await res.json();
         if (data.token) {
+          setIsConnected(true);
+
           // Connect WebSocket immediately
           const wsUrl = `${wsProtocol}//${wsHost}/api/v1/webchat/socket?token=${data.token}`;
           ws = new WebSocket(wsUrl);
