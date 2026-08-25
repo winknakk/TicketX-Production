@@ -1,0 +1,97 @@
+{
+  "1": {
+    "conversationId": "1",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-08-03T08:28:18.426Z",
+    "maxLeaseExpiresAt": null,
+    "human_session_started_at": null,
+    "human_session_expire_at": null,
+    "last_human_reply_at": null
+  },
+  "2": {
+    "conversationId": "2",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-07-31T06:29:24.536Z"
+  },
+  "3": {
+    "conversationId": "3",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-07-31T06:29:21.956Z"
+  },
+  "5": {
+    "conversationId": "5",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-07-24T04:58:05.539Z"
+  },
+  "11": {
+    "conversationId": "11",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-07-31T06:29:26.972Z"
+  },
+  "12": {
+    "conversationId": "12",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-07-31T06:29:30.080Z"
+  },
+  "67": {
+    "conversationId": "67",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-08-07T08:52:04.776Z",
+    "maxLeaseExpiresAt": null,
+    "human_session_started_at": null,
+    "human_session_expire_at": null,
+    "last_human_reply_at": null
+  },
+  "999": {
+    "conversationId": "999",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-08-18T07:49:01.315Z",
+    "maxLeaseExpiresAt": null,
+    "human_session_started_at": null,
+    "human_session_expire_at": null,
+    "last_human_reply_at": null
+  },
+  "1007": {
+    "conversationId": "1007",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-08-07T06:14:34.856Z"
+  },
+  "1008": {
+    "conversationId": "1008",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-08-07T08:18:37.511Z",
+    "maxLeaseExpiresAt": null,
+    "human_session_started_at": null,
+    "human_session_expire_at": null,
+    "last_human_reply_at": null
+  },
+  "1041": {
+    "conversationId": "1041",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-08-20T01:54:30.419Z",
+    "maxLeaseExpiresAt": null,
+    "human_session_started_at": null,
+    "human_session_expire_at": null,
+    "last_human_reply_at": null
+  },
+  "1042": {
+    "conversationId": "1042",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-08-14T09:54:57.333Z"
+  },
+  "1044": {
+    "conversationId": "1044",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-08-14T09:54:57.333Z"
+  },
+  "1045": {
+    "conversationId": "1045",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-08-14T09:54:57.333Z"
+  },
+  "1046": {
+    "conversationId": "1046",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-08-14T09:43:29.724Z"
+  }
+}

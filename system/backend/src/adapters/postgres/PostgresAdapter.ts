@@ -288,7 +288,7 @@ export class PostgresAdapter implements DatabaseAdapter {
         identityIdStr = identityResult.rows[0].id.toString();
       } else {
         // Create a profile first, then identity
-        const maxProfileRes = await pool.query("SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM profiles");
+        const maxProfileRes = await pool.query("SELECT COALESCE(MAX(CASE WHEN id::text ~ '^[0-9]+$' THEN id::bigint ELSE 0 END), 0) + 1 AS next_id FROM profiles");
         const nextProfileId = maxProfileRes.rows[0].next_id;
 
         const profileResult = await pool.query(
@@ -306,7 +306,7 @@ export class PostgresAdapter implements DatabaseAdapter {
           "id"
         );
 
-        const maxIdentRes = await pool.query("SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM identities");
+        const maxIdentRes = await pool.query("SELECT COALESCE(MAX(CASE WHEN id::text ~ '^[0-9]+$' THEN id::bigint ELSE 0 END), 0) + 1 AS next_id FROM identities");
         const nextIdentId = maxIdentRes.rows[0].next_id.toString();
 
         const newIdentity = await pool.query(
@@ -338,7 +338,7 @@ export class PostgresAdapter implements DatabaseAdapter {
         return convResult.rows[0].id.toString();
       }
 
-      const maxConvRes = await pool.query("SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM conversations");
+      const maxConvRes = await pool.query("SELECT COALESCE(MAX(CASE WHEN id::text ~ '^[0-9]+$' THEN id::bigint ELSE 0 END), 0) + 1 AS next_id FROM conversations");
       const nextConvId = maxConvRes.rows[0].next_id;
 
       const newConv = await pool.query(
@@ -1044,26 +1044,56 @@ export class PostgresAdapter implements DatabaseAdapter {
 
   async getMessages(conversationId: string): Promise<any[]> {
     if (!this.isValidConversationId(conversationId)) return [];
-    const query = `
-      SELECT id, conversation_id, role, content, message_type, reply_to_message_id, delivery_status, reactions, is_pinned, quote_token, created_at AS timestamp
-      FROM messages
-      WHERE conversation_id = $1::integer
-      ORDER BY created_at ASC
-    `;
-    const res = await pool.query(query, [conversationId]);
-    return res.rows.map((r) => ({
-      id: r.id,
-      conversation_id: r.conversation_id,
-      role: r.role,
-      content: r.content,
-      message_type: r.message_type || "text",
-      reply_to_message_id: r.reply_to_message_id,
-      delivery_status: r.delivery_status || "delivered",
-      reactions: r.reactions || {},
-      is_pinned: r.is_pinned || false,
-      quote_token: r.quote_token || null,
-      timestamp: r.timestamp instanceof Date ? r.timestamp.toISOString() : r.timestamp,
-    }));
+    try {
+      const query = `
+        SELECT id, conversation_id, role, content, message_type, reply_to_message_id, delivery_status, reactions, is_pinned, quote_token, created_at AS timestamp
+        FROM messages
+        WHERE conversation_id = $1::integer
+        ORDER BY created_at ASC
+      `;
+      const res = await pool.query(query, [conversationId]);
+      return res.rows.map((r) => ({
+        id: r.id,
+        conversation_id: r.conversation_id,
+        role: r.role,
+        content: r.content,
+        message_type: r.message_type || "text",
+        reply_to_message_id: r.reply_to_message_id,
+        delivery_status: r.delivery_status || "delivered",
+        reactions: r.reactions || {},
+        is_pinned: r.is_pinned || false,
+        quote_token: r.quote_token || null,
+        timestamp: r.timestamp instanceof Date ? r.timestamp.toISOString() : r.timestamp,
+      }));
+    } catch (err: any) {
+      // Fallback query if newer columns (delivery_status, reactions, is_pinned, quote_token, reply_to_message_id) are not yet migrated
+      console.warn(`[PostgresAdapter] Extended getMessages query failed, falling back to core columns:`, err.message);
+      try {
+        const fallbackQuery = `
+          SELECT id, conversation_id, role, content, created_at AS timestamp
+          FROM messages
+          WHERE conversation_id = $1::integer
+          ORDER BY created_at ASC
+        `;
+        const res = await pool.query(fallbackQuery, [conversationId]);
+        return res.rows.map((r) => ({
+          id: r.id,
+          conversation_id: r.conversation_id,
+          role: r.role,
+          content: r.content,
+          message_type: "text",
+          reply_to_message_id: null,
+          delivery_status: "delivered",
+          reactions: {},
+          is_pinned: false,
+          quote_token: null,
+          timestamp: r.timestamp instanceof Date ? r.timestamp.toISOString() : r.timestamp,
+        }));
+      } catch (fallbackErr: any) {
+        console.error(`[PostgresAdapter] Core getMessages fallback failed:`, fallbackErr.message);
+        return [];
+      }
+    }
   }
 
 

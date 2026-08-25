@@ -1,4 +1,4 @@
-# ── TicketX Production Docker Compose ──
+# ── AX-INFRA-003: AutomationX V3 Docker Compose ──
 version: '3.8'
 
 services:
@@ -11,13 +11,12 @@ services:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
       - ax-backend
-      - ax-frontend
     restart: unless-stopped
 
   # ── Backend API Server ──
   ax-backend:
     build:
-      context: ../system/backend
+      context: ./ticket_codebase
       dockerfile: Dockerfile
     env_file:
       - .env.production
@@ -30,11 +29,24 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # ── Background Workers ──
+  ax-worker:
+    build:
+      context: ./ticket_codebase
+      dockerfile: Dockerfile.worker
+    env_file:
+      - .env.production
+    depends_on:
+      pg-primary:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
   # ── Frontend SPA ──
   ax-frontend:
     build:
-      context: ../system/frontend
-      dockerfile: Dockerfile
+      context: ./frontend
     ports:
       - "5173:80"
     restart: unless-stopped
@@ -43,22 +55,22 @@ services:
   pg-primary:
     image: ankane/pgvector:v0.5.1
     environment:
-      POSTGRES_DB: csdb
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secure_postgres_pass_2026}
+      POSTGRES_DB: automationx
+      POSTGRES_USER: ax_admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secure_pass}
     volumes:
       - pg-data:/var/lib/postgresql/data
-      - ../system/backend/database/migrations:/docker-entrypoint-initdb.d:ro
+      - ./ticket_codebase/database/migrations:/docker-entrypoint-initdb.d:ro
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d csdb"]
+      test: ["CMD-SHELL", "pg_isready -U ax_admin -d automationx"]
       interval: 10s
       timeout: 5s
       retries: 5
     restart: unless-stopped
 
-  # ── Redis Cache & Queue ──
+  # ── Redis Cluster ──
   redis:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
