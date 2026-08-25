@@ -1,36 +1,37 @@
 import { pool } from "../adapters/postgres/PostgresAdapter";
-import { config } from "../config/env";
-import { LineProjectOnboardingService } from "../services/LineProjectOnboardingService";
+import { PlaneService } from "../services/planeService";
+import { PostgresAdapter } from "../adapters/postgres/PostgresAdapter";
 
-async function testWebhook(): Promise<void> {
-  const pepper =
-    config.PROJECT_JOIN_CODE_PEPPER ||
-    config.LINE_CHANNEL_ACCESS_TOKEN ||
-    "automationx_default_pepper_key_2026";
+async function fixAndTestPlane() {
+  await pool.query(
+    "UPDATE plane_workspace_mappings SET credential_ref = $1, plane_api_key = $1 WHERE project_id = 101",
+    ["plane_api_08c97a9323bf4854b6bae958d7577f60"]
+  );
+  console.log("Updated plane_workspace_mappings for project 101 (EXC03)");
 
-  const service = new LineProjectOnboardingService(pool, pepper, config.LINE_ONBOARDING_MODE);
+  const mapping = await pool.query("SELECT * FROM plane_workspace_mappings WHERE project_id = 101");
+  console.log("CURRENT MAPPING:", mapping.rows[0]);
 
-  console.log("=== SIMULATING WEBHOOK EVENT FOR TX-S94B-M23D ===");
-  for (let i = 0; i < 5; i++) {
-    try {
-      const decision = await service.processEvent({
-        webhookEventId: `test_evt_${Date.now()}_${i}`,
-        type: "message",
-        userId: "U367f5ba23c8167bc4b15a7a4e7c52b26",
-        destination: "U48cb9897ca17cda31f68856063ecd999",
-        messageText: "TX-S94B-M23D",
-      });
+  const dbAdapter = new PostgresAdapter();
+  const planeService = new PlaneService(dbAdapter);
 
-      console.log("Decision result:");
-      console.log(JSON.stringify(decision, null, 2));
-      break;
-    } catch (e: any) {
-      console.error(`Attempt ${i + 1} failed: ${e.message}`);
-      await new Promise(r => setTimeout(r, 1000));
-    }
-  }
+  const testPayload = {
+    ticket_number: "TCK-2026-TEST-" + Math.floor(1000 + Math.random() * 9000),
+    project_id: 101,
+    org_id: "org_excise",
+    subject: "ทดสอบการเปิด Ticket สรรพสามิต ไปยัง Plane",
+    summary: "ทดสอบการส่ง Issue จาก TicketX ไปยัง https://projects.oneweb.tech/cs-team/projects/95c2f51f-16c9-4048-87e2-4a28a414a979",
+    priority: "P2",
+    severity: "High",
+    created_by_type: "AI_BOT",
+    created_by_name: "PromptX AI",
+  };
+
+  console.log("\nTesting promoteTicketToPlane for EXC03...");
+  const result = await planeService.promoteTicketToPlane(testPayload);
+  console.log("PROMOTION RESULT:", JSON.stringify(result, null, 2));
 
   await pool.end();
 }
 
-testWebhook().catch(console.error);
+fixAndTestPlane().catch(console.error);
