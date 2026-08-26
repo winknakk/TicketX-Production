@@ -1,4 +1,4 @@
-# 📊 Architectural Flow Comparison: Old (Whiteboard) vs. Proposed New Flow (English Edition)
+﻿# 📊 Architectural Flow Comparison: Old (Whiteboard) vs. Proposed New Flow (English Edition)
 
 > **Side-by-Side Architectural Evaluation & Evolution Report**  
 > **Purpose:** Executive comparison demonstrating structural weaknesses in the initial whiteboard flow and the enterprise value delivered by the new unified architecture.  
@@ -25,17 +25,17 @@ flowchart TD
     AgentX_Old["AgentX (AI Engine)\n(No linked KB)"]:::oldbox
 
     User_Old --> Line_Old
-    Line_Old -->|Inbound message| AutomationX_Old
-    AutomationX_Old -->|Bot Reply| Line_Old
+    Line_Old -->|"Inbound message"| AutomationX_Old
+    AutomationX_Old -->|"Bot Reply"| Line_Old
     AutomationX_Old --> DB_Old
     
     %% CRM Isolation
-    CRM_Old -->|Direct DB Read/Write| DB_Old
-    CRM_Old -->|Human Reply| Line_Old
+    CRM_Old -->|"Direct DB Read/Write"| DB_Old
+    CRM_Old -->|"Human Reply"| Line_Old
     
     %% AgentX Flow
-    AutomationX_Old <-->|Tool calls / Results| AgentX_Old
-    AgentX_Old -.->|❌ Floating arrow: No linked KB| DeadEnd["(Knowledge Base missing in diagram)"]:::oldbox
+    AutomationX_Old <-->|"Tool calls / Results"| AgentX_Old
+    AgentX_Old -.->|"❌ Floating arrow: No linked KB"| DeadEnd["(Knowledge Base missing in diagram)"]:::oldbox
 
     linkStyle 4,5,6,7 stroke:#EF4444,stroke-width:2px;
 ```
@@ -71,28 +71,28 @@ flowchart TD
     Plane["🎯 Plane.so (Engineering Tracker)"]:::plane
 
     %% Main Flow
-    Customer -->|1. Sends issue / inquiry| LINE
-    LINE -->|2. Inbound webhook| AutomationX
-    AutomationX -->|3. Record timeline| DB
-    AutomationX <-->|4. Dispatch context for AI reasoning| AgentX
+    Customer -->|"1. Sends issue / inquiry"| LINE
+    LINE -->|"2. Inbound webhook"| AutomationX
+    AutomationX -->|"3. Record timeline"| DB
+    AutomationX <-->|"4. Dispatch context for AI reasoning"| AgentX
     
     %% AI & Knowledge Base
-    AgentX <-->|5. Vector search SOPs / Git code / Graph| KB
-    AutomationX -->|6. Automated Customer Reply (Bot Reply)| LINE
+    AgentX <-->|"5. Vector search SOPs / Git code / Graph"| KB
+    AutomationX -->|"6. Automated Customer Reply (Bot Reply)"| LINE
     LINE --> Customer
 
     %% Plane Integration
-    AutomationX -->|7. Forward sync work item| Plane
-    Plane -.->|8. Reverse status sync on completion| AutomationX
+    AutomationX -->|"7. Forward sync work item"| Plane
+    Plane -.->|"8. Reverse status sync on completion"| AutomationX
 
     %% Smart CRM & Copilot
-    AutomationX <-->|9. Push live chat + AI Insights| CRM
-    Agent <-->|10. Workspace operations| CRM
-    CRM <-->|11. Direct SOP & code lookups| KB
-    CRM -->|12. Human Takeover Reply| AutomationX
+    AutomationX <-->|"9. Push live chat + AI Insights"| CRM
+    Agent <-->|"10. Workspace operations"| CRM
+    CRM <-->|"11. Direct SOP & code lookups"| KB
+    CRM -->|"12. Human Takeover Reply"| AutomationX
 
     %% Closed-Loop Learning
-    CRM -.->|13. Ingest resolved solution to KB| KB
+    CRM -.->|"13. Ingest resolved solution to KB"| KB
 ```
 
 ---
@@ -114,3 +114,4 @@ flowchart TD
 
 * **Old Baseline**: Traditional, fragmented chatbot setup where AI and human agents operate in disconnected silos with no linked knowledge representation.
 * **New Proposed Flow**: An **AI-Human Collaborative Platform** that channels the full power of a **3-Layer Knowledge Base (SOPs + Git Code + Knowledge Graph)** across **Customers ➔ AI (AgentX) ➔ Support Operators (CRM) ➔ Engineering (Plane.so)**.
+
