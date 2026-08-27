@@ -21,6 +21,8 @@ import { TakeoverHandoffCard } from './components/ui/TakeoverHandoffCard';
 import { CommandPalette } from './components/common/CommandPalette';
 
 import MainframeLandingLogin from './features/standalone-landing/MainframeLandingLogin';
+import { apiFetch } from './lib/apiFetch';
+import { getSessionToken, isAuthenticated } from './lib/session';
 import './App.css';
 
 export interface ConversationSummary {
@@ -49,16 +51,6 @@ interface Toast {
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:3000';
-const API_KEY = import.meta.env.VITE_API_KEY || '';
-
-/** Fetch wrapper that attaches Authorization header when API_KEY is configured. */
-function apiFetch(url: string, init?: RequestInit): Promise<Response> {
-  const headers: Record<string, string> = {
-    ...(init?.headers as Record<string, string> | undefined),
-  };
-  if (API_KEY) headers['Authorization'] = `Bearer ${API_KEY}`;
-  return fetch(url, { ...init, headers });
-}
 
 function isLandingRoute(): boolean {
   const path = window.location.pathname;
@@ -112,6 +104,10 @@ export default function App() {
   const dismissedAlertsRef = useRef(new Set<string>());
   const activeProjectIdRef = useRef(activeProjectId);
   activeProjectIdRef.current = activeProjectId;
+  // Read by the socket handler, which must not re-subscribe every time the
+  // conversation list changes.
+  const conversationsRef = useRef<ConversationSummary[]>(conversations);
+  conversationsRef.current = conversations;
 
   const setActiveTab = useCallback((tab: AppTab) => {
     setActiveTabState(tab);
@@ -271,6 +267,9 @@ export default function App() {
         endpoint.pathname = '/api/admin/socket';
         endpoint.search = '';
         endpoint.searchParams.set('projectId', activeProjectId);
+        const sessionToken = getSessionToken();
+        if (!sessionToken) return;
+        endpoint.searchParams.set('token', sessionToken);
         socket = new WebSocket(endpoint.toString());
         socket.onmessage = (event) => {
           if (disposed) return;
@@ -285,13 +284,41 @@ export default function App() {
               return;
             }
             if (payload.event !== 'NEW_HUMAN_REQUEST') return;
+            // No conversation id means there is nothing to open. This used to
+            // default to '1', which pointed the operator at an unrelated
+            // conversation on any malformed event.
+            const conversationId = String(payload.data?.conversationId || '');
+            if (!conversationId) return;
+
+            const known = conversationsRef.current.find((c) => String(c.id) === conversationId);
+            const lastMessage = payload.data?.lastMessage || 'Human assistance required';
             setTakeoverAlert({
-              conversationId: String(payload.data?.conversationId || '1'),
-              customerName: payload.data?.customerName || 'Customer',
-              lastMessage: payload.data?.lastMessage || 'Human assistance required',
+              conversationId,
+              // The backend no longer resolves the customer's name before
+              // broadcasting — holding the alert for a three-table join was
+              // the point of the change. The name is already here.
+              customerName: payload.data?.customerName || known?.profile_name || known?.customer || 'Customer',
+              lastMessage,
               reasonCode: payload.data?.reasonCode,
             });
-            fetchConversations(true);
+
+            if (known) {
+              // Merge locally rather than refetching. The broadcast is sent
+              // before the handoff row is committed, so a refetch here races
+              // the write and can repaint the row as AI-handled until the 30s
+              // poll corrects it.
+              setConversations((prev) =>
+                prev.map((c) =>
+                  String(c.id) === conversationId
+                    ? { ...c, handled_by: 'human', takeover_status: 'PENDING_HUMAN', last_message: lastMessage }
+                    : c
+                )
+              );
+            } else {
+              // Not in the list yet — a first-contact conversation. Only this
+              // case needs the round trip.
+              fetchConversations(true);
+            }
           } catch { /* Ignore malformed socket events without disrupting the workspace. */ }
         };
         socket.onerror = () => {};

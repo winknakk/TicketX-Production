@@ -116,15 +116,17 @@ export class PostgresAdapter implements DatabaseAdapter {
       }
 
       const { rows } = await pool.query(
-        `INSERT INTO tickets (ticket_id, conversation_id, subject, summary, status, priority, created_via, project_id, severity, due_date, org_id)
-         VALUES ($1, $2, $3, $4, $5, $6, 'ai', $7, $8, $9, $10)
+        `INSERT INTO tickets (ticket_id, conversation_id, subject, summary, status, plane_status, priority, created_via, project_id, severity, due_date, org_id, lifecycle_changed_at)
+         VALUES ($1, $2, $3, $4, $5, 'Backlog', $6, 'ai', $7, $8, $9, $10, NOW())
          RETURNING *`,
         [
           ticketNumber,
           parsedConvId,
           input.subject,
           input.summary,
-          "Backlog",
+          // Lifecycle NEW. Plane's own state (Backlog) is set separately in
+          // plane_status; tickets.status is the customer lifecycle now.
+          "NEW",
           mapPlanePriorityToTicketPriority(input.priority) || input.priority,
           parsedProjectId,
           input.severity,
@@ -445,9 +447,15 @@ export class PostgresAdapter implements DatabaseAdapter {
 
       // 5. Find open conversation
       const convResult = await this.executeReadQuery(
+        // LOWER() on both sides, matching the identity lookup above.
+        // This compared channel case-sensitively while its sibling query two
+        // steps earlier did not, and the data holds both "line" and "LINE"
+        // (21 and 6 rows). A caller saying "LINE" therefore found the identity
+        // and then found no conversation, returning an empty conversationId
+        // that failed downstream as `invalid input syntax for type integer`.
         `SELECT id, status, handled_by
          FROM conversations
-         WHERE identity_id = $1 AND channel = $2 AND status = 'open'
+         WHERE identity_id = $1 AND LOWER(channel) = LOWER($2) AND status = 'open'
          ORDER BY created_at DESC
          LIMIT 1`,
         [identity.identity_id, channel]
@@ -825,6 +833,34 @@ export class PostgresAdapter implements DatabaseAdapter {
     }
   }
 
+
+  /**
+   * Hard tenant boundary applied on top of any caller-supplied filter.
+   *
+   * Returns a SQL condition restricting rows to the projects the request is
+   * allowed to see, or null when the caller is unrestricted. Callers that
+   * pass a plain orgId string (legacy signature) get null, preserving their
+   * existing behaviour.
+   */
+  private buildProjectBoundary(
+    tenantCtx: TenantContext | string | undefined,
+    column: string,
+    queryParams: any[]
+  ): string | null {
+    if (!tenantCtx || typeof tenantCtx === "string") return null;
+
+    const allowed = tenantCtx.allowedProjectIds;
+    if (allowed === null || allowed === undefined) return null;
+
+    if (allowed.length === 0) {
+      // Authenticated but granted nothing: match no rows rather than all.
+      return "FALSE";
+    }
+
+    queryParams.push(allowed as number[]);
+    return `${column} = ANY($${queryParams.length}::int[])`;
+  }
+
   async listAllTickets(conversationId?: string, projectId?: string, profileId?: string, identityId?: string, tenantCtx?: TenantContext | string): Promise<any[]> {
     const orgId = typeof tenantCtx === "string" ? tenantCtx : (tenantCtx?.orgId || "org_default");
     const fallback = async () => {
@@ -869,11 +905,19 @@ export class PostgresAdapter implements DatabaseAdapter {
         conditions.push(`t.project_id = $${queryParams.length}`);
       }
     }
+    // Applied regardless of what the caller asked for. Note the org filter
+    // above is skipped whenever a specific project is named, so without this
+    // a caller could read another organization's tickets simply by supplying
+    // that organization's project id.
+    const ticketBoundary = this.buildProjectBoundary(tenantCtx, "t.project_id", queryParams);
+    if (ticketBoundary) {
+      conditions.push(ticketBoundary);
+    }
     if (identityId) {
       const parsed = parseInt(identityId, 10);
       if (isNaN(parsed)) return [];
       queryParams.push(parsed);
-      conditions.push(`t.conversation_id IN (SELECT id FROM conversations WHERE identity_id = $${queryParams.length}::varchar)`);
+      conditions.push(`t.conversation_id IN (SELECT id FROM conversations WHERE identity_id = $${queryParams.length})`);
     }
     if (profileId) {
       const parsed = parseInt(profileId, 10);
@@ -958,6 +1002,13 @@ export class PostgresAdapter implements DatabaseAdapter {
         conditions.push(`c.project_id = $${queryParams.length}`);
       }
     }
+    // See the note in listAllTickets: the org filter above is bypassed when a
+    // specific project is named, so this boundary is what actually contains
+    // the request.
+    const convBoundary = this.buildProjectBoundary(tenantCtx, "c.project_id", queryParams);
+    if (convBoundary) {
+      conditions.push(convBoundary);
+    }
 
     let query = `
       SELECT
@@ -1040,6 +1091,40 @@ export class PostgresAdapter implements DatabaseAdapter {
         profile_phone: row.profile_phone,
       };
     }));
+  }
+
+  /**
+   * Bounded duplicate check over the tail of a conversation.
+   *
+   * Reads at most `limit` rows and only the two columns being compared, so it
+   * costs the same on a conversation with ten messages as on one with ten
+   * thousand — unlike getMessages below, which has no LIMIT and returns every
+   * column of every row.
+   *
+   * Fails open. A false negative writes a duplicate message; a false positive
+   * would discard a customer's message outright, which is the worse outcome.
+   */
+  async hasRecentMessage(conversationId: string, role: string, content: string, limit: number = 5): Promise<boolean> {
+    if (!this.isValidConversationId(conversationId)) return false;
+    try {
+      const { rows } = await pool.query(
+        `SELECT 1
+           FROM (
+             SELECT role, content
+               FROM messages
+              WHERE conversation_id = $1::integer
+              ORDER BY created_at DESC
+              LIMIT $2
+           ) recent
+          WHERE recent.role = $3 AND recent.content = $4
+          LIMIT 1`,
+        [conversationId, limit, role, content]
+      );
+      return rows.length > 0;
+    } catch (err: any) {
+      logger.warn({ error: err.message, conversationId }, "hasRecentMessage failed; treating message as new");
+      return false;
+    }
   }
 
   async getMessages(conversationId: string): Promise<any[]> {

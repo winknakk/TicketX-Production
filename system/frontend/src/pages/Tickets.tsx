@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ExternalLink, RefreshCw, X, AlertTriangle, RotateCcw } from 'lucide-react';
 import { useProject } from '../context/ProjectContext';
 import { Button, DataState, IconButton, LastUpdated, PageHeader, SearchField, StatusBadge } from '../components/ui/Primitives';
+import { matchesFilter, statusLabel, statusTone, type StatusFilter } from '../lib/ticketStatus';
 
 interface TicketRecord {
   id1?: string;
@@ -39,14 +40,9 @@ const idOf = (ticket: TicketRecord) => ticket.id1 || ticket.id || '';
 const displayIdOf = (ticket: TicketRecord) => ticket.ticketId || ticket.ticket_id || idOf(ticket) || 'Unavailable';
 const planeIdOf = (ticket: TicketRecord) => ticket.planeIssueId || ticket.plane_issue_id;
 
-const statusTone = (status?: string): 'resolved' | 'claimed' | 'pending' | 'unavailable' | 'escalated' => {
-  if (!status) return 'unavailable';
-  const lower = status.toLowerCase();
-  if (lower.includes('cancel')) return 'escalated';
-  if (lower.includes('resolv') || lower.includes('clos') || lower.includes('done')) return 'resolved';
-  if (lower.includes('progress')) return 'claimed';
-  return 'pending';
-};
+// Substring matching on the old free-text status is gone: it treated
+// RESOLVED as finished, which hid the tickets that are actually waiting on a
+// customer reply. Tone now comes from the lifecycle vocabulary.
 
 const priorityTone = (value?: string): 'escalated' | 'warning' | 'information' | 'neutral' | 'unavailable' => {
   if (!value) return 'unavailable';
@@ -83,7 +79,7 @@ export function Tickets({ apiBaseUrl, showToast }: TicketsProps) {
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
   const [promotingId, setPromotingId] = useState<string | null>(null);
   const [restoringId, setRestoringId] = useState<string | null>(null);
-  const [filter, setFilter] = useState<'all' | 'open' | 'in progress' | 'resolved' | 'cancelled'>('all');
+  const [filter, setFilter] = useState<StatusFilter>('all');
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<TicketRecord | null>(null);
 
@@ -194,10 +190,7 @@ export function Tickets({ apiBaseUrl, showToast }: TicketsProps) {
 
   const filtered = useMemo(() => {
     return tickets.filter((ticket) => {
-      const recordStatus = (ticket.status || '').toLowerCase();
-      const filterMatches =
-        filter === 'all' ||
-        (filter === 'cancelled' ? recordStatus.includes('cancel') : recordStatus === filter);
+      const filterMatches = matchesFilter(ticket.status, filter);
       const text = `${displayIdOf(ticket)} ${ticket.subject || ''} ${ticket.summary || ''} ${ticket.conversation_id || ''} ${ticket.created_by_name || ''}`.toLowerCase();
       return filterMatches && text.includes(search.toLowerCase());
     });
@@ -229,7 +222,7 @@ export function Tickets({ apiBaseUrl, showToast }: TicketsProps) {
           className="w-full lg:max-w-md"
         />
         <div className="flex max-w-full gap-1 overflow-x-auto rounded-lg bg-muted p-1" role="group" aria-label="Ticket status filter">
-          {(['all', 'open', 'in progress', 'resolved', 'cancelled'] as const).map((item) => (
+          {(['all', 'open', 'waiting', 'resolved', 'closed', 'cancelled'] as const).map((item) => (
             <button
               type="button"
               key={item}
@@ -242,7 +235,7 @@ export function Tickets({ apiBaseUrl, showToast }: TicketsProps) {
               <span className="ml-1.5">
                 {item === 'all'
                   ? tickets.length
-                  : tickets.filter((t) => (t.status || '').toLowerCase().includes(item === 'cancelled' ? 'cancel' : item)).length}
+                  : tickets.filter((t) => matchesFilter(t.status, item)).length}
               </span>
             </button>
           ))}
@@ -288,7 +281,7 @@ export function Tickets({ apiBaseUrl, showToast }: TicketsProps) {
                         </StatusBadge>
                       </td>
                       <td className="px-4 py-3">
-                        <StatusBadge tone={statusTone(ticket.status)}>{ticket.status || 'Unavailable'}</StatusBadge>
+                        <StatusBadge tone={statusTone(ticket.status)}>{statusLabel(ticket.status)}</StatusBadge>
                       </td>
                       <td className="px-4 py-3">
                         {planeIdOf(ticket) ? (
@@ -314,7 +307,7 @@ export function Tickets({ apiBaseUrl, showToast }: TicketsProps) {
                   <button type="button" className="w-full text-left" onClick={() => setSelected(ticket)}>
                     <div className="flex items-start justify-between gap-3">
                       <span className="font-mono text-xs font-semibold text-primary">{displayIdOf(ticket)}</span>
-                      <StatusBadge tone={statusTone(ticket.status)}>{ticket.status || 'Unavailable'}</StatusBadge>
+                      <StatusBadge tone={statusTone(ticket.status)}>{statusLabel(ticket.status)}</StatusBadge>
                     </div>
                     <h2 className="mt-2 text-sm font-bold">{ticket.subject || 'Untitled ticket'}</h2>
                     <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{ticket.summary || 'No summary reported'}</p>

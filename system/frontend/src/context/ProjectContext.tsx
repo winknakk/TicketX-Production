@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
+import { apiFetch } from '../lib/apiFetch';
 
 export interface Project {
   id: string;
@@ -18,13 +19,7 @@ interface ProjectContextType {
 
 const ProjectContext = createContext<ProjectContextType | undefined>(undefined);
 const API_BASE_URL = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:3000';
-const API_KEY = import.meta.env.VITE_API_KEY || '';
 
-function apiFetch(url: string, init?: RequestInit): Promise<Response> {
-  const headers: Record<string, string> = { ...(init?.headers as Record<string, string> | undefined) };
-  if (API_KEY) headers['Authorization'] = `Bearer ${API_KEY}`;
-  return fetch(url, { ...init, headers });
-}
 
 const defaultProjects: Project[] = [
   { id: 'all', name: 'All Projects', projectType: 'Workspace' },

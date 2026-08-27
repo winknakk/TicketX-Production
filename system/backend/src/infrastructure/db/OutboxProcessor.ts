@@ -4,8 +4,13 @@ import { createLogger } from "../../observability/logger";
 import { deletePlaneWorkItem } from "../../services/planeDeletionService";
 import { PlaneService } from "../../services/planeService";
 import { PostgresAdapter } from "../../adapters/postgres/PostgresAdapter";
+import { classifyOutboxFailure, backoffMs, logClassification } from "./OutboxFailureClassifier";
+import { traceRecorder } from "../../observability/TraceRecorder";
 
 const logger = createLogger("OutboxProcessor");
+
+/** Retry budget for failures that could plausibly succeed later. */
+const MAX_TRANSIENT_ATTEMPTS = 5;
 
 /**
  * OutboxProcessor runs a background polling loop to process transactional
@@ -116,16 +121,51 @@ export class OutboxProcessor {
 
           // Mark as processed
           await this.outboxRepo.markProcessed(id);
+
+          // B-5: the outbox is a causal hop. Correlation comes from the
+          // payload when the producer supplied one; it is not invented.
+          await traceRecorder.record({
+            correlationId: payload.correlationId || `outbox-${id}`,
+            component: "outbox",
+            eventType: `${event_type}_dispatched`,
+            outboxEventId: Number(id),
+            ticketId: Number(payload.ticketDbId) || null,
+            projectId: payload.projectId ? Number(payload.projectId) : null,
+            orgId: payload.orgId ?? null,
+            detail: { eventType: event_type, attempts },
+          });
         } catch (err: any) {
           const nextAttempts = attempts + 1;
-          const status = nextAttempts >= 5 ? "failed" : "pending";
+          const kind = classifyOutboxFailure(err);
+          logClassification(id, event_type, kind, err);
 
-          logger.error(
-            { id, event_type, attempts: nextAttempts, error: err.message, status },
-            "Failed to process outbox event"
-          );
+          await traceRecorder.record({
+            correlationId: payload.correlationId || `outbox-${id}`,
+            component: "outbox",
+            eventType: `${event_type}_failed`,
+            status: "failed",
+            outboxEventId: Number(id),
+            detail: { eventType: event_type, classification: kind, attempts: nextAttempts },
+            errorMessage: err.message,
+          });
 
-          await this.outboxRepo.updateAttempts(id, nextAttempts, err.message, status);
+          if (kind !== "transient") {
+            // The payload is unacceptable, or the caller is not permitted.
+            // Retrying cannot change either, and burning five attempts on it
+            // only delays the events queued behind it. This is what left nine
+            // "Custom Id cannot be integers" events cycling for 19 days.
+            await this.outboxRepo.deadLetter(id, nextAttempts, err.message, kind);
+          } else if (nextAttempts >= MAX_TRANSIENT_ATTEMPTS) {
+            await this.outboxRepo.deadLetter(id, nextAttempts, err.message, "transient");
+            logger.error(
+              { id, event_type, attempts: nextAttempts },
+              "Outbox event exhausted its retry budget and was dead-lettered"
+            );
+          } else {
+            const delay = backoffMs(nextAttempts);
+            await this.outboxRepo.scheduleRetry(id, nextAttempts, err.message, delay);
+            logger.info({ id, event_type, attempts: nextAttempts, retryInMs: delay }, "Outbox retry scheduled");
+          }
         }
       }
     } catch (err: any) {

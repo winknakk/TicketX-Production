@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Loader2, ArrowRight, UserCheck, ChevronRight, Phone, ShieldCheck } from 'lucide-react';
 import { useProject } from '@/context/ProjectContext';
+import { setSession } from '../../lib/session';
 
 interface MainframeLandingLoginProps {
   onLoginSuccess?: (profile: 'Admin Good' | 'Admin Win') => void;
@@ -87,14 +88,9 @@ export default function MainframeLandingLogin({ onLoginSuccess }: MainframeLandi
       const pw = password.trim();
 
       // Quick offline/mock check for admin1234 or demo accounts
-      const demoAccounts: Record<string, { role: string; orgId: string }> = {
-        'superadmin@ticketx.io': { role: 'super_admin', orgId: 'org_default' },
-        'admin@avalant.co.th': { role: 'admin', orgId: 'org_avalant' },
-        'agent@avalant.co.th': { role: 'employee', orgId: 'org_avalant' },
-        'customer@avalant.co.th': { role: 'customer', orgId: 'org_avalant' },
-        'admin1234': { role: 'super_admin', orgId: 'org_default' }
-      };
-
+      // There is deliberately no client-side account list here. The previous
+      // implementation granted super_admin locally whenever the backend
+      // rejected the credentials, which made the login screen decorative.
       try {
         const apiBaseUrl = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:3000').replace(/\/$/, '');
         const res = await fetch(`${apiBaseUrl}/api/v1/auth/login`, {
@@ -105,24 +101,13 @@ export default function MainframeLandingLogin({ onLoginSuccess }: MainframeLandi
 
         setIsSubmitting(false);
 
-        if (res && res.success && res.user) {
-          localStorage.setItem('user_role', res.user.role || 'super_admin');
-          localStorage.setItem('active_org_id', res.user.orgId || 'org_default');
-          localStorage.setItem('active_operator_profile', res.user.name || 'Admin Good');
+        if (res && res.success && res.token) {
+          setSession(res.token, res.expiresAt, res.user);
           onLoginSuccess?.('Admin Good');
           return;
         }
 
-        if (demoAccounts[un] || (un === 'admin1234' && pw === 'admin1234')) {
-          const acc = demoAccounts[un] || { role: 'super_admin', orgId: 'org_default' };
-          localStorage.setItem('user_role', acc.role);
-          localStorage.setItem('active_org_id', acc.orgId);
-          localStorage.setItem('active_operator_profile', un.split('@')[0] || 'Admin Good');
-          onLoginSuccess?.('Admin Good');
-          return;
-        }
-
-        setLoginError('Invalid username or password. Use demo accounts or admin1234.');
+        setLoginError(res?.message || 'Invalid username or password.');
       } catch (err) {
         setIsSubmitting(false);
         setLoginError('Authentication service error');
@@ -211,6 +196,9 @@ export default function MainframeLandingLogin({ onLoginSuccess }: MainframeLandi
           orgId: 'org_avalant'
         };
 
+        if (completeRes?.sessionToken) {
+          setSession(completeRes.sessionToken, completeRes.expiresAt, profile);
+        }
         localStorage.setItem('center_token', token);
         localStorage.setItem('user_role', profile.role || 'admin');
         localStorage.setItem('active_org_id', profile.orgId || 'org_avalant');

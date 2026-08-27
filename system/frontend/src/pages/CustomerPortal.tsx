@@ -17,6 +17,7 @@ import {
   Radio
 } from 'lucide-react';
 import { Button, PageHeader, SearchField, StatusBadge } from '../components/ui/Primitives';
+import { statusTone } from '../lib/ticketStatus';
 
 export interface PortalTicket {
   id: number;
@@ -440,8 +441,10 @@ export function CustomerPortal() {
                 className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs text-foreground focus:outline-none"
               >
                 <option value="all">All Status</option>
-                <option value="backlog">Open / Backlog</option>
-                <option value="in progress">In Progress</option>
+                <option value="open">Open</option>
+                <option value="waiting">Waiting</option>
+                <option value="resolved">Resolved — awaiting your confirmation</option>
+                <option value="closed">Closed</option>
                 <option value="done">Done / Resolved</option>
               </select>
               <Button variant="secondary" onClick={fetchTickets} disabled={loading} className="px-3">
@@ -476,7 +479,7 @@ export function CustomerPortal() {
                         </StatusBadge>
                       </td>
                       <td className="px-4 py-3">
-                        <StatusBadge tone={t.status?.toLowerCase().includes('done') ? 'resolved' : 'pending'}>
+                        <StatusBadge tone={statusTone(t.status)}>
                           {t.status}
                         </StatusBadge>
                       </td>

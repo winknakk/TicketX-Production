@@ -1,8 +1,13 @@
 import axios from "axios";
 import fs from "node:fs";
+import https from "node:https";
 import path from "node:path";
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { config } from "../../config/env";
+import { customerNotificationService } from "../../services/CustomerNotificationService";
+import { customerConfirmationHandler } from "../../services/CustomerConfirmationHandler";
+import { executionContextService } from "../../domain/execution/ExecutionContextService";
+import { traceRecorder } from "../../observability/TraceRecorder";
 import {
   LineOnboardingDecision,
   LineProjectOnboardingService,
@@ -23,6 +28,27 @@ import { AgentSessionQueueService } from "../../services/AgentSessionQueueServic
 import { AgentSessionQueueWorker } from "../../services/AgentSessionQueueWorker";
 
 const logger = createLogger("line-webhook");
+
+/**
+ * Shared keep-alive agent for outbound LINE / PromptX calls.
+ *
+ * Every reply, push and loading-indicator request used to open its own TCP +
+ * TLS connection: measured against api.line.me that is ~155 ms of handshake
+ * (connect 78 ms, TLS 137 ms, first byte 275 ms) paid again on every single
+ * call, and one webhook event can make three of them. Reusing sockets removes
+ * that handshake for everything after the first call.
+ */
+const lineHttpsAgent = new https.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 30_000,
+  maxSockets: 32,
+  maxFreeSockets: 8,
+});
+
+/** Milliseconds elapsed since `start`, rounded, for structured timing logs. */
+function elapsedMs(start: bigint): number {
+  return Math.round(Number(process.hrtime.bigint() - start) / 1e6);
+}
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -72,6 +98,7 @@ async function sendLineReply(replyToken: string, decision: LineOnboardingDecisio
           "Content-Type": "application/json",
         },
         timeout: 10000,
+        httpsAgent: lineHttpsAgent,
       }
     );
   } catch (err: any) {
@@ -81,7 +108,10 @@ async function sendLineReply(replyToken: string, decision: LineOnboardingDecisio
         data: err.response?.data,
         message: err.message,
         replyToken,
-        tokenPrefix: config.LINE_CHANNEL_ACCESS_TOKEN?.slice(0, 15),
+        // Whether a token is configured is the diagnostically useful part.
+        // The previous line logged its first 15 characters on every LINE
+        // reply failure, which put credential material into the server log.
+        tokenConfigured: Boolean(config.LINE_CHANNEL_ACCESS_TOKEN),
       },
       "LINE reply API call failed"
     );
@@ -107,26 +137,49 @@ async function sendLinePushMessages(
         "Content-Type": "application/json",
       },
       timeout: 10000,
+      httpsAgent: lineHttpsAgent,
     }
   );
 }
 
-async function showLineLoadingAnimation(userId: string, seconds = 3): Promise<void> {
+/**
+ * Shows LINE's typing indicator in a 1:1 chat while the event is processed.
+ *
+ * `loadingSeconds` must be a multiple of five between 5 and 60 — LINE rejects
+ * anything else with HTTP 400 ("must be a multiple of five"). This was
+ * previously called with 3, so every request failed and the indicator never
+ * appeared; the empty catch below kept that silent. The value is snapped to a
+ * legal multiple here so a future caller cannot reintroduce the same defect.
+ *
+ * Failure stays non-fatal — this is a UX affordance, not part of the reply —
+ * but it is now logged rather than swallowed.
+ */
+async function showLineLoadingAnimation(userId: string, seconds = 5): Promise<void> {
   if (!userId || !config.LINE_CHANNEL_ACCESS_TOKEN) return;
+  const loadingSeconds = Math.min(60, Math.max(5, Math.round(seconds / 5) * 5));
   try {
     await axios.post(
       "https://api.line.me/v2/bot/chat/loading/start",
-      { chatId: userId, loadingSeconds: seconds },
+      { chatId: userId, loadingSeconds },
       {
         headers: {
           Authorization: `Bearer ${config.LINE_CHANNEL_ACCESS_TOKEN}`,
           "Content-Type": "application/json",
         },
         timeout: 3000,
+        httpsAgent: lineHttpsAgent,
       }
     );
-  } catch {
-    // Non-blocking UX loading indicator
+  } catch (err: any) {
+    logger.warn(
+      {
+        status: err.response?.status,
+        data: err.response?.data,
+        message: err.message,
+        loadingSeconds,
+      },
+      "LINE loading animation rejected"
+    );
   }
 }
 
@@ -143,7 +196,11 @@ async function forwardPromptXWebhook(
       events: [event],
       ...(ticketx ? { ticketx } : {}),
     },
-    { headers: { "Content-Type": "application/json" }, timeout: 15000 }
+    {
+      headers: { "Content-Type": "application/json" },
+      timeout: 15000,
+      httpsAgent: lineHttpsAgent,
+    }
   );
 }
 
@@ -248,8 +305,12 @@ export function registerLineWebhookRoutes(
         }
 
         const webhookEventId = String(event?.webhookEventId || "").trim();
+        // Stage timings for this event. Without them the only way to tell
+        // where a slow reply was spent is to guess between the tunnel, the
+        // remote database and the LINE API.
+        const eventStartedAt = process.hrtime.bigint();
         if (event?.source?.userId) {
-          showLineLoadingAnimation(String(event.source.userId), 3).catch(() => {});
+          showLineLoadingAnimation(String(event.source.userId)).catch(() => {});
         }
         const decision = await onboardingService.processEvent({
           type: String(event?.type || "unknown"),
@@ -260,6 +321,7 @@ export function registerLineWebhookRoutes(
           postbackData: event?.postback?.data ? String(event.postback.data) : undefined,
           isUnblocked: event?.follow?.isUnblocked === true,
         });
+        const decisionMs = elapsedMs(eventStartedAt);
 
         if (decision.duplicate || decision.action === "IGNORE") {
           processed += 1;
@@ -267,25 +329,58 @@ export function registerLineWebhookRoutes(
         }
         try {
           if (decision.action === "REPLY") {
+            const replyStartedAt = process.hrtime.bigint();
             await sendLineReply(String(event.replyToken || ""), decision);
+            logger.info(
+              {
+                webhookEventId,
+                eventType: String(event?.type || "unknown"),
+                reason: decision.reason,
+                decisionMs,
+                replyMs: elapsedMs(replyStartedAt),
+                totalMs: elapsedMs(eventStartedAt),
+              },
+              "LINE event handled"
+            );
           } else if (decision.action === "PASS_TO_AI") {
             if (event?.type === "message" && event?.message?.type === "image" && event?.message?.id) {
               const imageId = String(event.message.id);
               let convId = decision.conversationId;
               if (!convId && event?.source?.userId) {
-                try {
-                  const convRes = await pool.query(
-                    `SELECT c.id FROM conversations c
-                     JOIN identities i ON c.identity_id = i.id::varchar
-                     WHERE i.channel_ref = $1 AND c.status = 'open' AND c.deleted_at IS NULL
-                     ORDER BY c.id DESC LIMIT 1`,
-                    [event.source.userId]
+                // The onboarding decision did not name a conversation, so it
+                // is resolved from the LINE identity. This must be scoped to
+                // the project the decision resolved: a LINE user enrolled in
+                // more than one project would otherwise have their image
+                // attached to whichever conversation happened to be newest,
+                // which can be a different project's thread.
+                if (!decision.projectId) {
+                  logger.warn(
+                    { userId: event.source.userId, imageId },
+                    "Skipping image ingest: no project scope resolved for this event"
                   );
-                  if (convRes.rows.length > 0) {
-                    convId = convRes.rows[0].id;
+                } else {
+                  try {
+                    const convRes = await pool.query(
+                      `SELECT c.id FROM conversations c
+                       JOIN identities i ON c.identity_id = i.id
+                       WHERE i.channel_ref = $1
+                         AND c.project_id = $2
+                         AND c.status = 'open'
+                         AND c.deleted_at IS NULL
+                       ORDER BY c.id DESC LIMIT 1`,
+                      [event.source.userId, decision.projectId]
+                    );
+                    if (convRes.rows.length > 0) {
+                      convId = convRes.rows[0].id;
+                    } else {
+                      logger.warn(
+                        { userId: event.source.userId, projectId: decision.projectId },
+                        "No open conversation in the resolved project for this LINE identity"
+                      );
+                    }
+                  } catch (convErr: any) {
+                    logger.warn({ error: convErr.message }, "Failed to resolve conversation for image");
                   }
-                } catch (convErr: any) {
-                  logger.warn({ error: convErr.message }, "Failed to resolve conversation for image");
                 }
               }
 
@@ -339,6 +434,161 @@ export function registerLineWebhookRoutes(
             // Image pre-ingestion (S3 upload) is done immediately above —
             // LINE image URLs expire quickly and must be fetched before batching.
 
+            // --- Fast Path: persist the inbound text, then acknowledge ---
+            //
+            // The customer's message used to exist only inside the batch
+            // payload forwarded to PromptX. Persisting it here means the
+            // report survives even if every downstream dependency is down,
+            // and gives the acknowledgement something true to acknowledge.
+            //
+            // Idempotent on (conversation_id, external_id): a LINE retry
+            // updates the same row rather than inserting a second copy.
+            if (decision.conversationId && event?.type === "message" && event?.message?.type === "text") {
+              try {
+                await pool.query(
+                  `INSERT INTO messages (conversation_id, role, content, message_type, external_id, quote_token, created_at)
+                   VALUES ($1, 'customer', $2, 'text', $3, $4, NOW())
+                   ON CONFLICT (conversation_id, external_id) DO UPDATE
+                     SET content = EXCLUDED.content`,
+                  [
+                    decision.conversationId,
+                    String(event.message.text || ""),
+                    String(event.message.id || ""),
+                    event.message.quoteToken || null,
+                  ]
+                );
+              } catch (persistErr: any) {
+                logger.error(
+                  { error: persistErr.message, webhookEventId, conversationId: decision.conversationId },
+                  "Failed to persist inbound LINE text message"
+                );
+              }
+            }
+
+            // If this conversation has a ticket waiting on the customer, the
+            // reply may be the answer to that question. Handled deterministically
+            // and before the AI: closing a ticket is a state transition, and
+            // customer text must not reach an LLM that can perform one.
+            //
+            // Returns handled=false for anything that is not an answer, which
+            // is the common case, and processing continues normally.
+            let confirmationHandled = false;
+            if (decision.conversationId && event?.type === "message" && event?.message?.type === "text") {
+              try {
+                const outcome = await customerConfirmationHandler.handle({
+                  conversationId: Number(decision.conversationId),
+                  text: String(event.message.text || ""),
+                  correlationId: webhookEventId,
+                });
+                confirmationHandled = outcome.handled;
+                if (outcome.handled) {
+                  logger.info(
+                    {
+                      webhookEventId,
+                      conversationId: decision.conversationId,
+                      ticketId: outcome.ticketId,
+                      from: outcome.from,
+                      to: outcome.to,
+                    },
+                    "Customer reply resolved a pending ticket confirmation"
+                  );
+                }
+              } catch (confirmErr: any) {
+                logger.error(
+                  { error: confirmErr.message, webhookEventId },
+                  "Customer confirmation handling failed"
+                );
+              }
+            }
+
+            // --- B-0: mint the server-owned execution context ---
+            //
+            // Created here, after signature verification and identity /
+            // project / conversation resolution, so the tenant facts are
+            // established by trusted code before AgentX ever runs.
+            //
+            // The token travels OUT OF BAND in payload.ticketx, never inside
+            // the message text. A customer who types something that looks
+            // like a context marker is typing plain text: it is not read from
+            // there, and it is not forgeable in any case.
+            let executionToken: string | undefined;
+            let executionContextId: string | undefined;
+            if (decision.conversationId && decision.projectId) {
+              try {
+                const convTenant = await pool.query(
+                  `SELECT org_id, identity_id FROM conversations WHERE id = $1 LIMIT 1`,
+                  [decision.conversationId]
+                );
+                const orgId = convTenant.rows[0]?.org_id;
+                if (orgId) {
+                  const created = await executionContextService.create({
+                    channel: "line",
+                    lineEventId: webhookEventId,
+                    identityId: convTenant.rows[0]?.identity_id ?? null,
+                    conversationId: Number(decision.conversationId),
+                    projectId: Number(decision.projectId),
+                    orgId: String(orgId),
+                    correlationId: webhookEventId || undefined,
+                  });
+                  executionToken = created.token;
+                  // Carried separately: the queue persists its payload, so it
+                  // stores this id and re-derives the token at dispatch rather
+                  // than keeping a usable capability in a database row.
+                  executionContextId = created.context.contextId;
+
+                  await traceRecorder.record({
+                    correlationId: created.context.correlationId,
+                    component: "line_webhook",
+                    eventType: "message_received",
+                    lineEventId: webhookEventId,
+                    conversationId: created.context.conversationId,
+                    identityId: created.context.identityId,
+                    projectId: created.context.projectId,
+                    orgId: created.context.orgId,
+                    detail: { messageType: event?.message?.type || event?.type },
+                  });
+                }
+              } catch (ctxErr: any) {
+                logger.error(
+                  { error: ctxErr.message, webhookEventId },
+                  "Could not create execution context; downstream tool calls will fail closed"
+                );
+              }
+            }
+
+            // Acknowledge before any AI work begins. This is the Fast Path
+            // requirement: the customer hears back immediately, and never
+            // waits on the batch window, PromptX, RAG or Plane.
+            //
+            // Idempotency is keyed on webhookEventId, so a LINE retry cannot
+            // produce a second acknowledgement. (processEvent already drops
+            // duplicate webhookEventIds before this point; the ledger is the
+            // second, database-enforced guarantee.)
+            if (decision.conversationId && webhookEventId && event?.type === "message" && !confirmationHandled) {
+              void customerNotificationService
+                .send({
+                  conversationId: Number(decision.conversationId),
+                  notificationType: "acknowledgement",
+                  idempotencyKey: webhookEventId,
+                  projectId: decision.projectId ?? null,
+                  correlationId: webhookEventId,
+                })
+                .catch((ackErr: any) =>
+                  logger.error(
+                    { error: ackErr.message, webhookEventId },
+                    "Failed to send customer acknowledgement"
+                  )
+                );
+            }
+
+            if (confirmationHandled) {
+              // The turn is complete: the ticket transitioned and the customer
+              // was told. Forwarding it to the AI as well would produce a
+              // second, contradictory reply.
+              processed += 1;
+              continue;
+            }
+
             if (config.LINE_BATCH_ENABLED && event?.source?.userId) {
               // Enqueue for debounced batch forwarding.
               // This is synchronous (no await) — webhook returns HTTP 200 to LINE immediately.
@@ -351,6 +601,10 @@ export function registerLineWebhookRoutes(
                   projectName: decision.projectName,
                   conversationId: decision.conversationId,
                   pushOnboardingCarousel: decision.pushOnboardingCarousel,
+                  // Out-of-band capability token. Never placed in the message.
+                  executionToken,
+                  executionContextId,
+                  correlationId: webhookEventId,
                 }
               );
               // The 24-hour carousel recall push is sent immediately (not batched) —
@@ -422,6 +676,20 @@ export function registerLineWebhookRoutes(
                 }
               }
             }
+
+            // The AI's own reply is sent later, by the flow — this measures
+            // only the backend's share of the turn, up to hand-off.
+            logger.info(
+              {
+                webhookEventId,
+                eventType: String(event?.type || "unknown"),
+                reason: decision.reason,
+                batched: Boolean(config.LINE_BATCH_ENABLED && event?.source?.userId),
+                decisionMs,
+                handoffMs: elapsedMs(eventStartedAt),
+              },
+              "LINE event handed to AI"
+            );
           }
         } catch (deliveryError) {
           await onboardingService.releaseWebhookEventForRetry(webhookEventId);

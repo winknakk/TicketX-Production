@@ -3,7 +3,10 @@ import axios from "axios";
 import { DatabaseAdapter } from "../adapters/types";
 import { pool } from "../adapters/postgres/PostgresAdapter";
 import { config } from "../config/env";
+import { ticketStateMachine } from "../domain/ticket/TicketStateMachine";
+import { customerNotificationService } from "./CustomerNotificationService";
 import { createLogger } from "../observability/logger";
+import { traceRecorder } from "../observability/TraceRecorder";
 
 const logger = createLogger("planeWebhookService");
 
@@ -42,6 +45,12 @@ export interface PlaneMappingContext {
 
 export interface PlaneReverseSyncSummary {
   checked: number;
+  /** Work items whose Plane-side version was unchanged since the last poll. */
+  skipped: number;
+  /** Set when Plane rate-limited us and the cycle stopped early. */
+  rateLimited?: boolean;
+  /** Milliseconds to wait before polling again, when rate limited. */
+  retryAfterMs?: number;
   updated: number;
   deleted: number;
   unlinked: number;
@@ -201,7 +210,38 @@ export class PlaneWebhookService {
       return { processed: false, matched: false, reason: "no_supported_changes", planeIssueId };
     }
 
-    const syncResult = await this.dbAdapter.syncTicketFromPlane(planeIssueId, { status, priority });
+    // Status now goes through the ticket state machine, which owns the
+    // asymmetric reverse mapping: Plane "Done" produces TicketX RESOLVED, not
+    // CLOSED, and only the customer moves it further. Writing Plane's
+    // vocabulary straight into tickets.status - as this did before migration
+    // 040 - is what made the customer half of the journey unrepresentable.
+    //
+    // Priority is unaffected by the two-layer split and still syncs directly.
+    let syncResult: { matched: boolean; statusChanged: boolean; previousStatus?: string } = {
+      matched: false,
+      statusChanged: false,
+    };
+
+    let lifecycleResult: Awaited<ReturnType<typeof ticketStateMachine.applyPlaneStatus>> | null = null;
+
+    if (priority) {
+      syncResult = await this.dbAdapter.syncTicketFromPlane(planeIssueId, { priority });
+    }
+
+    if (status) {
+      const ticketRow = await pool
+        .query(`SELECT id FROM tickets WHERE plane_issue_id = $1 LIMIT 1`, [planeIssueId])
+        .catch(() => null);
+      const ticketId = ticketRow?.rows?.[0]?.id;
+
+      if (ticketId) {
+        lifecycleResult = await ticketStateMachine.applyPlaneStatus(ticketId, status, {
+          source: "plane_webhook",
+        });
+        syncResult.matched = true;
+        syncResult.statusChanged = Boolean(lifecycleResult.applied);
+      }
+    }
 
     // Update Plane creator attribution if present
     const creatorName = (data as any)?.created_by_detail?.display_name ||
@@ -221,9 +261,43 @@ export class PlaneWebhookService {
       logger.warn({ error: dbErr.message, planeIssueId }, "Could not update plane creator attribution");
     }
 
-    if (syncResult.matched && syncResult.statusChanged && status === "Done") {
-      this.doneNotificationDispatcher(planeIssueId).catch((err) => {
-        logger.error({ error: err.message, planeIssueId }, "Failed to dispatch customer Done notification");
+    // B-5: a Plane-side state change is part of the same causal chain. The
+    // correlation id is read from the ticket the change lands on, so the
+    // reverse-sync hop joins the chain that created the ticket rather than
+    // starting a fresh, unconnected one.
+    if (lifecycleResult?.applied && lifecycleResult.ticketId) {
+      const corr = await pool
+        .query(`SELECT correlation_id, project_id, org_id, conversation_id FROM tickets WHERE id = $1`, [
+          lifecycleResult.ticketId,
+        ])
+        .catch(() => null);
+      const row = corr?.rows?.[0];
+      await traceRecorder.record({
+        correlationId: row?.correlation_id || `reverse-sync-${lifecycleResult.ticketId}`,
+        component: "reverse_sync",
+        eventType: "plane_status_applied",
+        ticketId: lifecycleResult.ticketId,
+        planeIssueId: planeIssueId,
+        conversationId: row?.conversation_id ?? null,
+        projectId: row?.project_id ?? null,
+        orgId: row?.org_id ?? null,
+        detail: { planeStatus: status, notify: lifecycleResult.notify ?? null, eventId: lifecycleResult.eventId ?? null },
+      });
+    }
+
+    // The notification is driven by the lifecycle transition, not by Plane's
+    // raw state. Only reaching RESOLVED asks the customer to confirm, so a
+    // repeated "Done" on an already-resolved ticket notifies nobody.
+    if (lifecycleResult?.applied && lifecycleResult.notify === "resolution_confirmation_request") {
+      // Keyed on the transition's ticket_events row, so a repeated "Done"
+      // cannot re-notify, while a genuine re-resolution after REOPENED
+      // produces a new event and therefore a new notification.
+      void this.dispatchResolutionNotification(
+        planeIssueId,
+        lifecycleResult.ticketId!,
+        lifecycleResult.eventId ?? null
+      ).catch((err) => {
+        logger.error({ error: err.message, planeIssueId }, "Failed to dispatch customer resolution notification");
       });
     }
 
@@ -235,6 +309,39 @@ export class PlaneWebhookService {
       status,
       priority,
     };
+  }
+
+  /**
+   * Asks the customer to confirm the fix.
+   *
+   * Replaces a message that announced completion outright. Under the
+   * two-layer model Plane reaching Done means engineering finished, not that
+   * the customer agrees — so the message invites confirmation, and the ticket
+   * stays RESOLVED until the customer acts.
+   */
+  private async dispatchResolutionNotification(
+    planeIssueId: string,
+    ticketId: number,
+    eventId: number | null
+  ): Promise<void> {
+    const { rows } = await pool.query(
+      `SELECT t.id, t.ticket_number, t.conversation_id, t.project_id, t.org_id
+         FROM tickets t WHERE t.id = $1 LIMIT 1`,
+      [ticketId]
+    );
+    if (rows.length === 0 || !rows[0].conversation_id) return;
+    const ticket = rows[0];
+
+    await customerNotificationService.send({
+      conversationId: Number(ticket.conversation_id),
+      notificationType: "resolution_confirmation",
+      idempotencyKey: eventId ? `ticket_event:${eventId}` : `ticket:${ticketId}:resolved`,
+      ticketId: Number(ticket.id),
+      ticketNumber: ticket.ticket_number,
+      projectId: ticket.project_id ?? null,
+      orgId: ticket.org_id ?? null,
+      correlationId: planeIssueId,
+    });
   }
 
   private async dispatchCustomerDoneNotification(planeIssueId: string): Promise<void> {
@@ -279,7 +386,7 @@ export class PlaneWebhookService {
   }
 
   async syncLinkedTicketsFromPlane(batchSize = config.PLANE_REVERSE_SYNC_BATCH_SIZE): Promise<PlaneReverseSyncSummary> {
-    const summary: PlaneReverseSyncSummary = { checked: 0, updated: 0, deleted: 0, unlinked: 0, failed: 0 };
+    const summary: PlaneReverseSyncSummary = { checked: 0, skipped: 0, updated: 0, deleted: 0, unlinked: 0, failed: 0 };
 
     try {
       const mappingsRes = await pool.query(
@@ -297,10 +404,21 @@ export class PlaneWebhookService {
         const { project_id, org_id, workspace_slug, plane_project_id, plane_api_base_url, credential_ref } = mapping;
 
         // Query tickets matching 3-key scope (workspace_slug, plane_project_id, plane_issue_id)
+        // Tickets explicitly linked to this Plane project, plus legacy
+        // tickets that carry no Plane linkage yet and belong to this
+        // project. The previous `OR project_id = $3` had no such guard, so a
+        // ticket linked to one Plane project was also polled under every
+        // other mapping for the same TicketX project - querying Plane for an
+        // issue id that does not exist there, which is a large part of the
+        // observed failure count.
         const ticketsRes = await pool.query(
-          `SELECT id, plane_issue_id, plane_workspace_slug, plane_project_id, project_id, org_id, ticket_number
+          `SELECT id, plane_issue_id, plane_workspace_slug, plane_project_id, project_id, org_id,
+                  ticket_number, plane_last_seen_updated_at
            FROM tickets
-           WHERE ((plane_workspace_slug = $1 AND plane_project_id = $2) OR project_id = $3)
+           WHERE (
+                   (plane_workspace_slug = $1 AND plane_project_id = $2)
+                   OR (project_id = $3 AND plane_project_id IS NULL)
+                 )
              AND plane_issue_id IS NOT NULL AND plane_issue_id != ''
            LIMIT $4`,
           [workspace_slug, plane_project_id, project_id, batchSize]
@@ -321,6 +439,26 @@ export class PlaneWebhookService {
               timeout: 5000,
             });
 
+            // Skip work items Plane has not touched since we last applied
+            // them. Without this the poller rewrote every linked ticket on
+            // every cycle, producing spurious writes and provoking Plane
+            // into throttling the client.
+            const remoteUpdatedAtRaw = (response.data as any)?.updated_at;
+            const remoteUpdatedAt = remoteUpdatedAtRaw ? new Date(remoteUpdatedAtRaw) : null;
+            const lastSeen = ticket.plane_last_seen_updated_at
+              ? new Date(ticket.plane_last_seen_updated_at)
+              : null;
+
+            if (
+              remoteUpdatedAt &&
+              !Number.isNaN(remoteUpdatedAt.getTime()) &&
+              lastSeen &&
+              remoteUpdatedAt.getTime() <= lastSeen.getTime()
+            ) {
+              summary.skipped += 1;
+              continue;
+            }
+
             const syncRes = await this.sync(
               {
                 event: "work_item.updated",
@@ -339,6 +477,17 @@ export class PlaneWebhookService {
             );
 
             if (syncRes.matched) summary.updated += 1;
+
+            // Record the version we just applied, so the next cycle can skip
+            // this item. Written even when nothing matched: the remote
+            // version has still been observed, and re-fetching it changes
+            // nothing.
+            if (remoteUpdatedAt && !Number.isNaN(remoteUpdatedAt.getTime())) {
+              await pool.query(
+                `UPDATE tickets SET plane_last_seen_updated_at = $1 WHERE id = $2`,
+                [remoteUpdatedAt.toISOString(), ticket.id]
+              );
+            }
           } catch (err: any) {
             const isAbsentOrDeleted =
               err.response?.status === 404 ||
@@ -363,8 +512,37 @@ export class PlaneWebhookService {
                 logger.error({ error: delErr.message, issueId }, "Failed to delete ticket from DB on Plane 404/403 absent");
                 summary.failed += 1;
               }
+            } else if (err.response?.status === 429) {
+              // Plane is throttling us. Continuing through the remaining
+              // items guarantees more 429s and deepens the throttle, so the
+              // cycle stops here and the poller waits before trying again.
+              const retryAfter = Number(err.response?.headers?.["retry-after"]);
+              summary.rateLimited = true;
+              summary.retryAfterMs = Number.isFinite(retryAfter) && retryAfter > 0
+                ? Math.min(retryAfter * 1000, 300_000)
+                : 60_000;
+              logger.warn(
+                { issueId, retryAfterMs: summary.retryAfterMs },
+                "Plane rate-limited reverse sync; stopping this cycle early"
+              );
+              return summary;
             } else {
               summary.failed += 1;
+              // The failure count used to be reported with no indication of
+              // why, so a poller degrading under rate limiting looked
+              // identical to one hitting bad credentials.
+              logger.warn(
+                {
+                  issueId,
+                  ticketId: ticket.id,
+                  ticketNumber: ticket.ticket_number,
+                  workspaceSlug: workspace_slug,
+                  planeProjectId: plane_project_id,
+                  status: err.response?.status,
+                  error: err.message,
+                },
+                "Plane reverse sync failed for work item"
+              );
             }
           }
         }

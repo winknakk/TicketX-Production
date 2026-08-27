@@ -18,6 +18,12 @@ services:
     build:
       context: ./ticket_codebase
       dockerfile: Dockerfile
+    # REQUIRED in .env.production: SESSION_SECRET (>= 32 chars).
+    # It signs operator sessions and AgentX execution-context tokens. The
+    # server now refuses to boot without it, because without it every guarded
+    # route fails closed and no ticket can be created. Kept in the env file
+    # rather than an inline `environment:` entry - an inline entry would
+    # override the file with an empty value whenever the host shell lacks it.
     env_file:
       - .env.production
     ports:
@@ -34,6 +40,12 @@ services:
     build:
       context: ./ticket_codebase
       dockerfile: Dockerfile.worker
+    # REQUIRED in .env.production: SESSION_SECRET (>= 32 chars).
+    # It signs operator sessions and AgentX execution-context tokens. The
+    # server now refuses to boot without it, because without it every guarded
+    # route fails closed and no ticket can be created. Kept in the env file
+    # rather than an inline `environment:` entry - an inline entry would
+    # override the file with an empty value whenever the host shell lacks it.
     env_file:
       - .env.production
     depends_on:

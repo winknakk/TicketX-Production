@@ -10,6 +10,7 @@ import { TicketInput, ExecutionResult } from "../schemas/validation";
 import { DatabaseAdapter } from "../adapters/types";
 import { RuntimeContextResolver } from "../services/RuntimeContextResolver";
 import { mapPlanePriorityToTicketPriority } from "../services/planeWebhookService";
+import { customerNotificationService } from "../services/CustomerNotificationService";
 
 export class TicketService {
   private dbAdapter: DatabaseAdapter;
@@ -104,7 +105,12 @@ export class TicketService {
         projectId: projectIdNum,
         subject: input.subject,
         summary: input.summary,
-        status: "Backlog",
+        // Lifecycle status, not Plane status. This still said "Backlog" after
+        // the two-layer split, which tickets_status_lifecycle_check rejects -
+        // every ticket created through this path failed at the insert. Plane's
+        // own state lives in plane_status and is set at promotion, so it stays
+        // null until the work item exists.
+        status: "NEW",
         priority: mapPlanePriorityToTicketPriority(input.priority) || input.priority,
         severity: input.severity,
         dueDate,
@@ -160,6 +166,25 @@ export class TicketService {
 
       // Write to local encrypted backup
       await BackupManager.saveToBackup("tickets", resultData, "id");
+
+      // Tell the customer their case now has a number.
+      //
+      // This is the second half of the Fast Path acknowledgement: the first
+      // message is sent at ingestion and deliberately promises nothing but a
+      // look, because at that point no ticket exists to name. Keyed on the
+      // ticket id, so a retried creation cannot produce a second message.
+      void customerNotificationService
+        .send({
+          conversationId: ticket.conversationId,
+          notificationType: "ticket_created",
+          idempotencyKey: `ticket:${ticket.id}`,
+          ticketId: ticket.id,
+          ticketNumber,
+          projectId: parseInt(String(input.projectId), 10) || null,
+        })
+        .catch((err: any) =>
+          console.error("Failed to send ticket_created notification:", err.message)
+        );
 
       return {
         success: true,

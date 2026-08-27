@@ -17,20 +17,43 @@ export const EnvSchema = z.object({
   DATABASE_REPLICA_URL: z.string().optional(),
   NOCODB_BASE_URL: z.string().url().default("https://app.nocodb.com/"),
   NOCODB_URL: z.string().url().default("https://app.nocodb.com/"),
-  NOCODB_TOKEN: z.string().min(1, "NOCODB_TOKEN is required"),
+  NOCODB_TOKEN: z.string().default("unused_placeholder_token"),
   NOCODB_BASE_ID: z.string().default("pr3qdqjih5dlv8o"),
-  ACTIVEPIECES_WORKFLOW_PROVIDER: z.enum(["nocodb_v1", "postgres_v2"]).default("nocodb_v1"),
+  ACTIVEPIECES_WORKFLOW_PROVIDER: z.enum(["nocodb_v1", "postgres_v2"]).default("postgres_v2"),
   ACTIVEPIECES_HUMAN_REPLY_WEBHOOK_URL: z.string().url().default("https://wf.promptxai.com/api/v1/webhooks/HGkKjrGFq4Aw2wmaZLK7j"),
   ACTIVEPIECES_PROMOTE_TICKET_WEBHOOK_URL: z.string().url().default("https://wf.promptxai.com/api/v1/webhooks/cprgnt201vTw2zX8YQycQ"),
   ACTIVEPIECES_HUMAN_REPLY_WEBHOOK_URL_V2: z.string().url().default("https://wf.promptxai.com/api/v1/webhooks/v2-human-reply"),
   ACTIVEPIECES_PROMOTE_TICKET_WEBHOOK_URL_V2: z.string().url().default("https://wf.promptxai.com/api/v1/webhooks/v2-promote-ticket"),
+  PROMPTX_HUMAN_REPLY_WEBHOOK_URL: z.string().url().optional(),
+  PROMPTX_PROMOTE_TICKET_WEBHOOK_URL: z.string().url().optional(),
   PROMPTX_MCP_URL: z.string().url(),
   PROMPTX_MCP_TOKEN: z.string().min(1, "PROMPTX_MCP_TOKEN is required"),
   PROMPTX_FLOW_WEBHOOK_URL: z.string().url().default("https://wf.promptxai.com/api/v1/webhooks/xTSViJNFiBtB4y9RMBYfD"),
   PROMPTX_DIAGNOSTIC_TIMEOUT_MS: z.coerce.number().int().min(500).max(10000).default(3000),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   API_KEY: z.string().optional(),
+  // Comma-separated list of browser origins allowed to call the API with
+  // credentials. An arbitrary reflected origin combined with
+  // Access-Control-Allow-Credentials defeats the same-origin policy, so the
+  // origin must be matched against this allowlist before it is echoed back.
+  CORS_ALLOWED_ORIGINS: z
+    .string()
+    .default("http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000"),
+  // Secret used to sign admin session tokens. Required (together with or
+  // instead of API_KEY) for the API to serve authenticated requests at all —
+  // see authHook, which fails closed when neither is configured.
+  SESSION_SECRET: z.string().min(32).optional(),
+  SESSION_TTL_HOURS: z.coerce.number().min(1).max(168).default(12),
   WEBHOOK_SECRET: z.string().optional(),
+  // Enforcement switch for webhook authentication on /api/v1/webhooks/human_notify.
+  //
+  // Defaults to false because the published Main AI Core flow sends no
+  // credential on that call: enabling enforcement before the flow is updated
+  // and republished takes human takeover offline. While false the hook logs
+  // every unauthenticated call instead of rejecting it, so the flow can be
+  // migrated with the evidence visible. Set to true once the live flow node
+  // sends the header.
+  STRICT_WEBHOOK_AUTH: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
   RATE_LIMIT_MAX: z.coerce.number().default(60),
   RATE_LIMIT_WINDOW_MS: z.coerce.number().default(60000),
   PORT: z.coerce.number().default(3000),
@@ -49,7 +72,7 @@ export const EnvSchema = z.object({
   LINE_GROUP_GATEWAY_WEBHOOK_URL: z.string().url().default("https://wf.promptxai.com/api/v1/webhooks/dRV0RN5vXQLDZ67t9VROo"),
   LINE_ONBOARDING_MODE: z.enum(["code_required", "smart"]).default("code_required"),
   LINE_BATCH_ENABLED: z.coerce.boolean().default(true),
-  LINE_BATCH_WINDOW_MS: z.coerce.number().int().min(1000).default(15000),
+  LINE_BATCH_WINDOW_MS: z.coerce.number().int().min(500).default(2000),
   PROJECT_JOIN_CODE_PEPPER: z.string().min(16).optional(),
   PLANE_API_URL: z.string().url().default("https://api.plane.so"),
   PLANE_API_KEY: z.string().default("plane_mock_key"),
@@ -60,7 +83,12 @@ export const EnvSchema = z.object({
   PLANE_REVERSE_SYNC_INTERVAL_MS: z.coerce.number().int().min(10000).default(30000),
   PLANE_REVERSE_SYNC_BATCH_SIZE: z.coerce.number().int().min(1).max(25).default(25),
   DB_POOL_MAX: z.coerce.number().default(10),
-  DB_POOL_IDLE_TIMEOUT_MS: z.coerce.number().default(30000),
+  // PostgreSQL is remote (measured ~12 ms per round trip, ~85 ms to open a
+  // fresh connection). At 30 s any channel with a gap between messages paid
+  // that reconnect on almost every inbound event. Holding idle clients for
+  // 10 minutes keeps a warm connection across a normal conversation; the pool
+  // already sets TCP keepAlive and evicts clients that die in the meantime.
+  DB_POOL_IDLE_TIMEOUT_MS: z.coerce.number().default(600000),
   DB_POOL_CONNECTION_TIMEOUT_MS: z.coerce.number().default(20000),
   HUMAN_PENDING_TIMEOUT_MINUTES: z.coerce.number().int().min(1).max(60).default(5),
   HUMAN_ACTIVE_TIMEOUT_MINUTES: z.coerce.number().int().min(1).max(120).default(15),
@@ -86,6 +114,28 @@ export const validateEnv = (): Env => {
       throw new Error("Strict environment validation failed in Production.");
     }
   }
-  return (result.data || {}) as Env;
+
+  const env = (result.data || {}) as Env;
+
+  // SESSION_SECRET is load-bearing, not optional-in-practice.
+  //
+  // It signs both operator sessions and AgentX execution-context tokens, so
+  // without it ExecutionContextService throws and every guarded route fails
+  // closed - meaning ticket creation stops. That used to surface only when a
+  // customer sent a message and a ticket failed to appear. Refusing to boot
+  // says it at deploy time instead, which is the cheapest moment to find out.
+  if (process.env.NODE_ENV === "production") {
+    const secret = env.SESSION_SECRET;
+    if (!secret || secret.length < 32) {
+      throw new Error(
+        "CONFIGURATION ERROR: SESSION_SECRET must be set to at least 32 characters in production. " +
+          "It signs operator sessions and AgentX execution-context tokens; without it, ticket " +
+          "creation fails closed at runtime."
+      );
+    }
+  }
+
+  return env;
 };
 export const config = validateEnv();
+

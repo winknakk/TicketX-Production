@@ -14,6 +14,10 @@ type BatchEntry = {
       projectName?: string;
       conversationId?: number;
       pushOnboardingCarousel?: boolean;
+      /** Server-owned execution context token. Out-of-band only. */
+      executionToken?: string;
+      executionContextId?: string;
+      correlationId?: string;
     };
   }>;
   destination: string;
@@ -127,6 +131,16 @@ export class LineMessageBatchingService {
         projectName: lastDecision.projectName,
         conversationId: lastDecision.conversationId,
         batchSize: allLineEvents.length,
+        // B-0: the automation layer must present a capability on every tool
+        // call. It sits here, beside the events, never inside message text.
+        //
+        // Only the context ID is carried when the batch is queued - the queue
+        // persists this payload, and a signed capability sitting in a database
+        // row is usable by anyone who can read the row. The worker re-derives
+        // the token at dispatch instead. The direct path below has nothing to
+        // persist, so it carries the token itself.
+        executionContextId: lastDecision.executionContextId,
+        correlationId: lastDecision.correlationId,
       },
     };
 
@@ -169,9 +183,17 @@ export class LineMessageBatchingService {
           "[line-batch] Batch enqueued into AgentSessionQueueService and worker dispatched"
         );
       } else {
-        // Fallback: direct HTTP POST to PromptX gateway if queue service not configured
+        // Fallback: direct HTTP POST to PromptX gateway if queue service not configured.
+        // Nothing is persisted on this path, so the capability travels with it.
         const axios = (await import("axios")).default;
-        await axios.post(dmGatewayUrl, payload, {
+        const directPayload = {
+          ...payload,
+          ticketx: {
+            ...payload.ticketx,
+            executionToken: lastDecision.executionToken,
+          },
+        };
+        await axios.post(dmGatewayUrl, directPayload, {
           headers: { "Content-Type": "application/json" },
           timeout: 15000,
         });
