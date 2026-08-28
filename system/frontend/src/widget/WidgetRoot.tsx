@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { API_BASE_URL } from '../lib/apiBaseUrl';
 
 export interface Attachment {
   fileUrl: string;
@@ -35,8 +36,11 @@ export const WidgetRoot: React.FC<WidgetRootProps> = ({ projectId }) => {
   const reconnectTimeoutRef = useRef<any>(null);
   const isMountedRef = useRef(true);
 
-  const apiHost = window.location.hostname === "127.0.0.1" ? "127.0.0.1:3000" : "localhost:3000";
-  const backendUrl = `${window.location.protocol}//${apiHost}`;
+  // Was: `${protocol}//${hostname === "127.0.0.1" ? "127.0.0.1:3000" : "localhost:3000"}`.
+  // On any real host that produced https://localhost:3000 — the visitor's own
+  // machine, over TLS it does not speak — and every handshake failed with
+  // ERR_SSL_PROTOCOL_ERROR. The shared resolver returns the deployed origin.
+  const backendUrl = API_BASE_URL;
 
   // 1. Handshake and Session Setup
   useEffect(() => {
@@ -122,8 +126,9 @@ export const WidgetRoot: React.FC<WidgetRootProps> = ({ projectId }) => {
   const connectSocket = (token: string) => {
     if (!isMountedRef.current) return;
 
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${apiHost}/api/v1/webchat/socket?token=${token}`;
+    // Derived from the same origin as the HTTP calls, so the socket cannot
+    // point somewhere the rest of the widget does not.
+    const wsUrl = `${backendUrl.replace(/^http/, "ws")}/api/v1/webchat/socket?token=${token}`;
 
     const ws = new WebSocket(wsUrl);
     socketRef.current = ws;

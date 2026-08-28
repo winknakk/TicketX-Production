@@ -18,7 +18,7 @@
     "line:onboarding-bootstrap": "npx tsx src/cli/bootstrap-line-onboarding.ts",
     "plane:sync": "npx tsx src/run-plane-reverse-sync.ts",
     "plane:backfill-metadata": "npx tsx src/backfill-plane-work-item-metadata.ts",
-    "build": "tsc",
+    "build": "npx tsc",
     "lint": "npx eslint \"src/**/*.ts\"",
     "format": "npx prettier --check \"src/**/*.ts\"",
     "test:git-foundation": "npx tsx test/git/GitRepositoryFoundation.test.ts",

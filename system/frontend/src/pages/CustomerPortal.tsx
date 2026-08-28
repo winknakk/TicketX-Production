@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { Button, PageHeader, SearchField, StatusBadge } from '../components/ui/Primitives';
 import { statusTone } from '../lib/ticketStatus';
+import { API_BASE_URL } from '../lib/apiBaseUrl';
 
 export interface PortalTicket {
   id: number;
@@ -73,7 +74,7 @@ export function CustomerPortal() {
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const isMountedRef = useRef(true);
 
-  const apiBaseUrl = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:3000').replace(/\/$/, '');
+  const apiBaseUrl = API_BASE_URL;
   const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsHost = apiBaseUrl.replace(/^https?:\/\//, '');
 

@@ -16,6 +16,7 @@ import {
 import { CenterIamManagement } from '../../components/admin/CenterIamManagement';
 import { PlaneIntegrationsManagement } from '../../components/admin/PlaneIntegrationsManagement';
 import { ProjectDetailPlaneCard } from '../../components/admin/ProjectDetailPlaneCard';
+import { API_BASE_URL } from '../../lib/apiBaseUrl';
 import {
   Button,
   DataState,
@@ -104,7 +105,7 @@ export function MasterDataManagement() {
     defaultBranch: 'main',
   });
 
-  const apiBaseUrl = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:3000').replace(/\/$/, '');
+  const apiBaseUrl = API_BASE_URL;
 
   const fetchGitRepos = async (projectId: number) => {
     try {

@@ -29,8 +29,9 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { apiFetch } from '../../lib/apiFetch';
+import { API_BASE_URL } from '../../lib/apiBaseUrl';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:3000';
+
 
 export interface PlaneMappingItem {
   id: number;

@@ -1,11 +1,10 @@
 # ── AX-INFRA-002: AutomationX V3 Worker Dockerfile ──
 FROM node:20-alpine AS builder
 WORKDIR /app
-COPY package*.json tsconfig.json ./
-RUN npm ci
+COPY package*.json ./
+RUN npm ci --omit=dev
 COPY . .
-RUN npm run build
-RUN npm prune --production
+RUN npx tsc --outDir dist
 
 FROM node:20-alpine
 WORKDIR /app

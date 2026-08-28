@@ -88,7 +88,15 @@ const DEFAULT_TTL_SECONDS = 30 * 60;
 
 function signingKey(): string {
   // Reuses the session secret so there is one secret to rotate, not two.
-  const secret = config.SESSION_SECRET || "ax_live_session_secret_2026_ticketx_secure_key_8f92a10b4c3e";
+  //
+  // Throws rather than falling back to a constant. A fallback would let a
+  // misconfigured deployment keep minting execution-context tokens signed with
+  // a key anyone holding the source could reproduce — and the callers below
+  // are written on the promise that this throws when the secret is absent.
+  const secret = config.SESSION_SECRET;
+  if (!secret) {
+    throw new Error("SESSION_SECRET is required to sign execution context tokens");
+  }
   return secret;
 }
 
@@ -134,6 +142,12 @@ export class ExecutionContextService {
     const ttl = input.ttlSeconds ?? DEFAULT_TTL_SECONDS;
     const promptxSlug = `support_${input.conversationId}`;
 
+    // Sign BEFORE inserting. Signing throws when SESSION_SECRET is absent, and
+    // doing it after the INSERT left an orphan active row while the caller got
+    // nothing — every webhook then forwarded an empty token and Plane promotion
+    // failed closed, with the row's existence masking the real failure.
+    const token = `${contextId}.${sign(contextId)}`;
+
     await pool.query(
       `INSERT INTO execution_contexts
          (context_id, correlation_id, channel, line_event_id, identity_id,
@@ -176,7 +190,7 @@ export class ExecutionContextService {
         orgId: input.orgId,
         promptxSlug,
       },
-      token: `${contextId}.${sign(contextId)}`,
+      token,
     };
   }
 

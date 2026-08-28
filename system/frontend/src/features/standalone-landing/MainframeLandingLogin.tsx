@@ -6,6 +6,7 @@ import { Label } from '@/components/ui/label';
 import { Loader2, ArrowRight, UserCheck, ChevronRight, Phone, ShieldCheck } from 'lucide-react';
 import { useProject } from '@/context/ProjectContext';
 import { setSession } from '../../lib/session';
+import { API_BASE_URL } from '../../lib/apiBaseUrl';
 
 interface MainframeLandingLoginProps {
   onLoginSuccess?: (profile: 'Admin Good' | 'Admin Win') => void;
@@ -23,6 +24,9 @@ export default function MainframeLandingLogin({ onLoginSuccess }: MainframeLandi
   // Login form state
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  // Reveal is per-attempt on purpose: it resets whenever this screen mounts and
+  // is never persisted, so a shoulder-surfer cannot find it left switched on.
+  const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCenterSubmitting, setIsCenterSubmitting] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
@@ -92,7 +96,7 @@ export default function MainframeLandingLogin({ onLoginSuccess }: MainframeLandi
       // implementation granted super_admin locally whenever the backend
       // rejected the credentials, which made the login screen decorative.
       try {
-        const apiBaseUrl = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:3000').replace(/\/$/, '');
+        const apiBaseUrl = API_BASE_URL;
         const res = await fetch(`${apiBaseUrl}/api/v1/auth/login`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -133,7 +137,7 @@ export default function MainframeLandingLogin({ onLoginSuccess }: MainframeLandi
       }
 
       try {
-        const apiBaseUrl = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:3000').replace(/\/$/, '');
+        const apiBaseUrl = API_BASE_URL;
         
         // 1. Authenticate with Center App (either direct or via backend proxy)
         let centerRes = await fetch('https://centerapp.io/center/auth/login', {
@@ -304,15 +308,42 @@ export default function MainframeLandingLogin({ onLoginSuccess }: MainframeLandi
                 <Label htmlFor="password" className="text-black font-semibold text-sm sm:text-base">
                   Password
                 </Label>
-                <Input
-                  id="password"
-                  type="password"
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  disabled={isPending}
-                  className="bg-white/90 border-black/20 focus:border-black focus:ring-black rounded-2xl h-12 sm:h-13 text-base text-black placeholder:text-black/30 shadow-2xs px-4"
-                />
+                <div className="relative">
+                  <Input
+                    id="password"
+                    type={showPassword ? 'text' : 'password'}
+                    placeholder="••••••••"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    disabled={isPending}
+                    className="bg-white/90 border-black/20 focus:border-black focus:ring-black rounded-2xl h-12 sm:h-13 text-base text-black placeholder:text-black/30 shadow-2xs px-4 pr-12"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((shown) => !shown)}
+                    disabled={isPending}
+                    // aria-label rather than a title: a screen reader should hear
+                    // what the control does, and the label has to state the
+                    // action, not the current state.
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    aria-pressed={showPassword}
+                    tabIndex={-1}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 rounded-lg text-black/40 hover:text-black/80 hover:bg-black/5 focus:outline-none focus:ring-2 focus:ring-black/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {showPassword ? (
+                      // Eye with a slash: currently visible, clicking hides it.
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                        <line x1="1" y1="1" x2="23" y2="23" />
+                      </svg>
+                    ) : (
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                        <circle cx="12" cy="12" r="3" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
               </div>
 
               {loginError && (

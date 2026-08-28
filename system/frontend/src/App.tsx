@@ -24,6 +24,7 @@ import MainframeLandingLogin from './features/standalone-landing/MainframeLandin
 import { apiFetch } from './lib/apiFetch';
 import { getSessionToken, isAuthenticated } from './lib/session';
 import './App.css';
+import { API_BASE_URL } from './lib/apiBaseUrl';
 
 export interface ConversationSummary {
   id: string;
@@ -50,7 +51,7 @@ interface Toast {
   type: NotificationTone;
 }
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:3000';
+
 
 function isLandingRoute(): boolean {
   const path = window.location.pathname;

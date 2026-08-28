@@ -14,8 +14,9 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { apiFetch } from '../../lib/apiFetch';
+import { API_BASE_URL } from '../../lib/apiBaseUrl';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:3000';
+
 
 interface ProjectDetailPlaneCardProps {
   projectId: number;

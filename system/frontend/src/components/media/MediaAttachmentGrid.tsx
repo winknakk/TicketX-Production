@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Expand, FileText, Sparkles } from 'lucide-react';
 import { ImagePreviewModal } from './ImagePreviewModal';
+import { API_BASE_URL } from '../../lib/apiBaseUrl';
 
 export interface AttachmentItem {
   id?: number | string;
@@ -25,7 +26,7 @@ export const MediaAttachmentGrid: React.FC<MediaAttachmentGridProps> = ({ attach
     <div className="mt-2 grid max-w-sm grid-cols-1 gap-2 min-[420px]:grid-cols-2">
       {attachments.map((att: any, index) => {
         const rawUrl = att.fileUrl || att.file_url || att.url || att.file_path || att.filePath || '';
-        const apiHost = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+        const apiHost = API_BASE_URL;
         const fullUrl = rawUrl.startsWith('/api') || rawUrl.startsWith('/uploads')
           ? `${apiHost}${rawUrl}`
           : rawUrl;
