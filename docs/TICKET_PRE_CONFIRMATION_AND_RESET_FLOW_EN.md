@@ -27,27 +27,48 @@ In the legacy architecture, whenever a customer reports a malfunction or inciden
 
 ```mermaid
 flowchart TD
-    Start([👤 Customer Sends Message in LINE]) --> Gateway[LINE Webhook Router & Gateway]
-    Gateway --> MainCore[Main AI Core Flow]
-    MainCore --> FetchHistory[(Fetch Recent 5 Messages from PostgreSQL)]
-    FetchHistory --> GateAgent[🤖 Gatekeeper Agent - E.D.I.T.H.]
-    
-    GateAgent --> CheckState{Analyze State & Customer Intent}
-    
-    CheckState -->|1. New Issue Reported| StateIntake[📌 State: PENDING_CONFIRMATION<br/>Summarize Issue + Prompt Confirmation]
-    StateIntake --> ReplyLINE1[💬 Send Summary & Confirmation Request to LINE<br/>⚠️ Ticket NOT Created]
+    A((Customer)) <--> B([LINE OA])
+    B --> C([Webhook])
 
-    CheckState -->|2. Customer Confirms: 'Confirm / Yes / Correct'| StateConfirm[✅ State: CONFIRMED_CREATE<br/>Approve Ticket Creation]
-    StateConfirm --> CallHub[Invoke Sub Flow - Ticket Operations Hub]
-    CallHub --> InsertDB[(INSERT Ticket into PostgreSQL)]
+    subgraph AutomationX-MainFlow
+    C --> C1[/Lock conversation of Line User or queue/]
+    C1 --> D[/Fetch last 5 messages/]
+    D --> E[Invoke agent EDITH]
+    E --> F{Analyze state and customer intent}
+
+    F -->|1. New Issue Reported| StateIntake[📌 State: PENDING_CONFIRMATION
+Summarize Issue + Prompt Confirmation]
+    StateIntake --> DraftResponse1@{ shape: doc, label: "Summary & Confirmation Request 
+ Ticket NOT created"}
+
+    F -->|2. Customer Confirms: 'Confirm / Yes / Correct'| StateConfirm[✅ State: CONFIRMED_CREATE
+Approve Ticket Creation]
+
+    F -->|3. Customer Modifies: 'No / Change to...'| StateEdit[📝 State: EDIT_DETAIL
+Update Issue Context & Resubmit Summary]
+    StateEdit --> DraftResponse3@{ shape: doc, label: "Updated Summary & Re-confirm"}
+
+    F -->|4. Customer Cancels: 'Cancel / Fixed / Reset'| StateCancel[❌ State: CANCEL_RESET
+Abort Ticket Creation]
+    StateCancel --> DraftResponse4@{ shape: doc, label: "Polite Cancellation Acknowledgment"}
+
+    ReplyLINE[Send response back to LINE]
+    ReplyLINE --> C2[/Clear lock or remove from queue/]
+    end
+
+    subgraph AutomationX-Flow2
+    StateConfirm --> CallSubflow[Invoke Sub Flow - Ticket Operations Hub]
+    CallSubflow --> InsertDB[(INSERT Ticket into TicketX PostgreSQL)]
     InsertDB --> SyncPlane[✈️ Create Issue on Plane.so]
-    SyncPlane --> ReplyLINE2[💬 Send Ticket ID TCK-2026-xxxxx + SLA to Customer]
+    SyncPlane --> DraftResponse2@{ shape: doc, label: "Ticket ID TCK-2026-xxxxx + Ticket SLA"}
+    end
 
-    CheckState -->|3. Customer Modifies: 'No / Change to...'| StateEdit[📝 State: EDIT_DETAIL<br/>Update Issue Context & Resubmit Summary]
-    StateEdit --> ReplyLINE3[💬 Send Updated Summary & Re-confirm]
-
-    CheckState -->|4. Customer Cancels: 'Cancel / Fixed / Reset'| StateCancel[❌ State: CANCEL_RESET<br/>Abort Ticket Creation]
-    StateCancel --> ReplyLINE4[💬 Send Polite Cancellation Acknowledgment]
+    DraftResponse1 --> ReplyLINE
+    DraftResponse2 --> ReplyLINE
+    DraftResponse3 --> ReplyLINE
+    DraftResponse4 --> ReplyLINE
+    C2 --> B
+ 
 ```
 
 ---
