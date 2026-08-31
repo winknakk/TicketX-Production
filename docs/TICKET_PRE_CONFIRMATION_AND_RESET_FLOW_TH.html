@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>TicketX / AutomationX - Two-Step Ticket Confirmation & Reset Flow</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&family=Inter:wght@400;500;600;700;800&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  @page {
+    size: A4 portrait;
+    margin: 14mm 12mm 14mm 12mm;
+  }
+  
+  * {
+    box-sizing: border-box;
+  }
+
+  body {
+    font-family: 'Sarabun', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    color: #1e293b;
+    background-color: #ffffff;
+    line-height: 1.55;
+    font-size: 13px;
+    margin: 0;
+    padding: 0;
+  }
+
+  .header {
+    background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+    color: #ffffff;
+    padding: 22px 24px;
+    border-radius: 12px;
+    margin-bottom: 20px;
+    border-left: 6px solid #6366f1;
+    box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+  }
+
+  .header h1 {
+    margin: 0 0 6px 0;
+    font-size: 20px;
+    font-weight: 700;
+    color: #ffffff;
+    letter-spacing: -0.02em;
+  }
+
+  .header p {
+    margin: 3px 0;
+    font-size: 12.5px;
+    color: #cbd5e1;
+  }
+
+  .badge {
+    display: inline-block;
+    background-color: #4f46e5;
+    color: #ffffff;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 10px;
+    border-radius: 9999px;
+    margin-top: 6px;
+  }
+
+  h2 {
+    font-size: 15px;
+    font-weight: 700;
+    color: #0f172a;
+    border-bottom: 2px solid #e2e8f0;
+    padding-bottom: 5px;
+    margin-top: 20px;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  h3 {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: #334155;
+    margin-top: 14px;
+    margin-bottom: 6px;
+  }
+
+  .card-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+
+  .card {
+    background-color: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+
+  .card-danger {
+    background-color: #fef2f2;
+    border-color: #fecaca;
+    border-left: 4px solid #ef4444;
+  }
+
+  .card-success {
+    background-color: #f0fdf4;
+    border-color: #bbf7d0;
+    border-left: 4px solid #22c55e;
+  }
+
+  .card-title {
+    font-weight: 700;
+    font-size: 13.5px;
+    margin-bottom: 6px;
+  }
+
+  .card-danger .card-title { color: #991b1b; }
+  .card-success .card-title { color: #166534; }
+
+  ul {
+    margin: 4px 0;
+    padding-left: 18px;
+  }
+
+  li {
+    margin-bottom: 4px;
+  }
+
+  .diagram-box {
+    background-color: #f8fafc;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    padding: 14px;
+    margin: 12px 0;
+    page-break-inside: avoid;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0;
+    font-size: 12px;
+  }
+
+  th, td {
+    border: 1px solid #cbd5e1;
+    padding: 8px 10px;
+    text-align: left;
+    vertical-align: top;
+  }
+
+  th {
+    background-color: #f1f5f9;
+    font-weight: 700;
+    color: #1e293b;
+  }
+
+  tr:nth-child(even) {
+    background-color: #f8fafc;
+  }
+
+  .chat-box {
+    background-color: #f1f5f9;
+    border-radius: 8px;
+    padding: 12px;
+    margin: 10px 0;
+    font-size: 12.5px;
+  }
+
+  .chat-user {
+    color: #0369a1;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+
+  .chat-bot {
+    color: #4338ca;
+    font-weight: 600;
+    margin-bottom: 4px;
+    margin-top: 6px;
+  }
+
+  .chat-bubble {
+    background: #ffffff;
+    border: 1px solid #cbd5e1;
+    padding: 8px 12px;
+    border-radius: 6px;
+    margin-bottom: 6px;
+  }
+
+  code {
+    font-family: 'Fira Code', monospace;
+    font-size: 11.5px;
+    background-color: #f1f5f9;
+    color: #475569;
+    padding: 2px 5px;
+    border-radius: 4px;
+    border: 1px solid #e2e8f0;
+  }
+
+  pre {
+    font-family: 'Fira Code', monospace;
+    background-color: #0f172a;
+    color: #f8fafc;
+    padding: 12px;
+    border-radius: 6px;
+    font-size: 11px;
+    line-height: 1.45;
+    overflow-x: auto;
+  }
+
+  .flow-step {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+
+  .step-num {
+    background-color: #4f46e5;
+    color: #ffffff;
+    font-weight: 700;
+    font-size: 11px;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .step-content {
+    flex: 1;
+  }
+
+  .page-break {
+    page-break-before: always;
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>🚀 สถาปัตยกรรมระบบยืนยันและรีเซ็ตปัญหาก่อนเปิดตั๋ว</h1>
+  <p>Two-Step Ticket Confirmation, Correction & Reset Flow (TicketX / AutomationX)</p>
+  <p><strong>เอกสารข้อกำหนดการออกแบบสถาปัตยกรรมระบบ และ Flow Prompt</strong> | วันที่: 31 สิงหาคม 2026</p>
+  <span class="badge">Architecture & Engineering Specification</span>
+</div>
+
+<h2>1. ที่มาและปัญหาเดิม (Background & Problem Statement)</h2>
+
+<div class="card-grid">
+  <div class="card card-danger">
+    <div class="card-title">❌ ปัญหาของระบบเดิม (Immediate Creation)</div>
+    <ul>
+      <li><strong>เปิดตั๋วทันทีในข้อความแรก:</strong> บอทเรียก <code>create_ticket</code> ทันทีที่ลูกค้าพิมพ์ข้อความแรกเข้ามา</li>
+      <li><strong>เกิดปัญหาตั๋วขยะ (Junk Tickets):</strong> หากลูกค้าพิมพ์ผิด, แจ้งระบบผิด, หรือแก้ไขปัญหาได้เองแล้ว ตั๋วจะถูกส่งไปยัง Plane.so ทันที</li>
+      <li><strong>ไม่มีการทบทวนหรือรีเซ็ต:</strong> ขาดกลไกในการยกเลิกหรือแก้ไขข้อมูลก่อนตั๋วถูกเปิดจริง</li>
+    </ul>
+  </div>
+
+  <div class="card card-success">
+    <div class="card-title">🎯 เป้าหมายของระบบใหม่ (Pre-Ticket Confirmation)</div>
+    <ul>
+      <li><strong>สรุปปัญหาและถามยืนยันก่อน:</strong> สกัดระบบ, อาการ, ความรุนแรง แล้วส่งสรุปให้ลูกค้าตรวจสอบ</li>
+      <li><strong>ยืนยันจึงสร้างตั๋ว:</strong> เมื่อลูกค้าตอบ <em>"ยืนยัน / ถูกต้อง / ใช่ค่ะ"</em> จึงจะสร้างตั๋ว <code>TCK-2026-xxxxx</code> และส่งเข้า Plane.so</li>
+      <li><strong>รองรับการแก้ไข & รีเซ็ต:</strong> หากลูกค้าพิมพ์แก้ หรือขอยกเลิก บอทสามารถปรับปรุงข้อมูลหรือยกเลิกได้โดยไม่สร้างตั๋วขยะ</li>
+    </ul>
+  </div>
+</div>
+
+<h2>2. แผนผังการทำงานหลัก (System Flow Steps)</h2>
+
+<div class="diagram-box">
+  <div class="flow-step">
+    <div class="step-num">1</div>
+    <div class="step-content">
+      <strong>ลูกค้าแจ้งปัญหา (Problem Intake):</strong> ลูกค้าส่งข้อความใน LINE เช่น <em>"แจ้งเคสค่ะ ระบบชดใช้เงินยืม ต้องการย้อนสถานะจากชำระแล้วเป็นค้างชำระค่ะ"</em>
+    </div>
+  </div>
+  <div class="flow-step">
+    <div class="step-num">2</div>
+    <div class="step-content">
+      <strong>AI Gatekeeper วิเคราะห์ & สรุป:</strong> E.D.I.T.H. สกัด Entity และกำหนด Action เป็น <code>CONFIRM_REQUIRED</code> (ยังไม่บันทึกลง Database)
+    </div>
+  </div>
+  <div class="flow-step">
+    <div class="step-num">3</div>
+    <div class="step-content">
+      <strong>บอทถามยืนยัน:</strong> บอทส่งข้อความสรุปรายละเอียดเคสและถามยืนยันกลับไปยัง LINE
+    </div>
+  </div>
+  <div class="flow-step">
+    <div class="step-num">4</div>
+    <div class="step-content">
+      <strong>ลูกค้าตอบกลับ:</strong>
+      <ul style="margin-top:4px;">
+        <li>✅ <strong>ลูกค้ายืนยัน ("ยืนยัน/ถูกต้อง"):</strong> ระบบรัน Sub Flow สร้างตั๋ว <code>TCK-2026-90928</code> ➔ Sync ขึ้น Plane.so ➔ แจ้งเลขเคสและ SLA</li>
+        <li>📝 <strong>ลูกค้าแก้ไข ("ขอแก้เป็น..."):</strong> บอทอัปเดตข้อมูลและส่งข้อความยืนยันใหม่</li>
+        <li>❌ <strong>ลูกค้ายกเลิก ("ยกเลิก/แก้ได้แล้ว"):</strong> บอทล้างข้อมูลเคส ไม่สร้างตั๋ว และตอบรับการยกเลิกอย่างสุภาพ</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<h2>3. ตัวอย่างบทสนทนาจริง (Real Dialogue Examples)</h2>
+
+<div class="chat-box">
+  <div class="chat-user">👤 ลูกค้า:</div>
+  <div class="chat-bubble">แจ้งเคสค่ะ ระบบชดใช้เงินยืม ต้องการย้อนสถานะ จากชำระแล้ว เป็นค้างชำระค่ะ</div>
+  
+  <div class="chat-bot">🤖 บอท (สรุปและถามยืนยัน):</div>
+  <div class="chat-bubble">
+    รับทราบค่ะ แอดมินขอสรุปรายละเอียดเคสดังนี้นะคะ:<br>
+    📌 <strong>ระบบ/เมนู:</strong> ระบบชดใช้เงินยืม<br>
+    📝 <strong>ปัญหา:</strong> ต้องการย้อนสถานะจากชำระแล้วเป็นค้างชำระ<br><br>
+    ข้อมูลถูกต้องหรือไม่คะ? <em>(พิมพ์ 'ยืนยัน' เพื่อเปิดเคส หรือพิมพ์แจ้งข้อมูลที่ต้องการแก้ไขได้เลยค่ะ)</em>
+  </div>
+
+  <div class="chat-user">👤 ลูกค้า:</div>
+  <div class="chat-bubble">ยืนยันค่ะ</div>
+
+  <div class="chat-bot">🤖 บอท (เปิดตั๋วสำเร็จ):</div>
+  <div class="chat-bubble">
+    รับแจ้งเรื่องเรียบร้อยแล้วค่ะ เลขติดตามเคสนี้คือ <strong>TCK-2026-90928</strong> 📋<br>
+    ทีมงานจะตรวจสอบและดำเนินการให้ ภายในวันนี้ 13:19 น.ค่ะ
+  </div>
+</div>
+
+<div class="page-break"></div>
+
+<h2>4. ตารางการจัดการสถานะการสนทนา (State Transition Table)</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th>สถานะปัจจุบัน</th>
+      <th>ข้อความจากลูกค้า</th>
+      <th>Action จาก Gatekeeper</th>
+      <th>สถานะถัดไป</th>
+      <th>การทำงานในระบบ</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>IDLE</strong> (ปกติ)</td>
+      <td>แจ้งเหตุขัดข้อง / ปัญหาใหม่</td>
+      <td><code>CONFIRM_REQUIRED</code></td>
+      <td><strong>PENDING_CONFIRMATION</strong></td>
+      <td>สรุปปัญหาและถามยืนยันใน LINE (ไม่สร้างตั๋ว)</td>
+    </tr>
+    <tr>
+      <td><strong>PENDING_CONFIRMATION</strong></td>
+      <td>"ยืนยัน", "ถูกต้อง", "ใช่ค่ะ", "โอเค"</td>
+      <td><code>CREATE</code> (Confirmed)</td>
+      <td><strong>TICKET_CREATED</strong></td>
+      <td>สร้างตั๋วใน PostgreSQL ➔ Plane.so ➔ แจ้งเลขเคส</td>
+    </tr>
+    <tr>
+      <td><strong>PENDING_CONFIRMATION</strong></td>
+      <td>"ไม่ใช่ค่ะ", "ขอแก้เป็น...", "พิมพ์ผิด"</td>
+      <td><code>CONFIRM_REQUIRED</code></td>
+      <td><strong>PENDING_CONFIRMATION</strong></td>
+      <td>อัปเดตข้อมูลปัญหาใหม่ และส่งสรุปถามยืนยันซ้ำ</td>
+    </tr>
+    <tr>
+      <td><strong>PENDING_CONFIRMATION</strong></td>
+      <td>"ยกเลิก", "ไม่แจ้งแล้ว", "ทำได้แล้ว"</td>
+      <td><code>CANCEL_RESET</code></td>
+      <td><strong>IDLE</strong></td>
+      <td>ล้างข้อมูลเคส ไม่สร้างตั๋ว แจ้งยกเลิกอย่างสุภาพ</td>
+    </tr>
+    <tr>
+      <td><strong>IDLE</strong></td>
+      <td>ถามคู่มือ / ข้อบังคับ / กฎระเบียบ</td>
+      <td><code>DOCS_INQUIRY</code></td>
+      <td><strong>IDLE</strong></td>
+      <td>ค้นหาและตอบจากเอกสาร (Sub Flow Project Docs)</td>
+    </tr>
+    <tr>
+      <td><strong>IDLE</strong></td>
+      <td>ขอคุยกับเจ้าหน้าที่ / ไม่คุยกับบอท</td>
+      <td><code>HUMAN_REQUEST</code></td>
+      <td><strong>HUMAN_TAKEOVER</strong></td>
+      <td>ส่ง Webhook <code>human_notify</code> โอนสายให้เจ้าหน้าที่</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>5. การตั้งค่า Prompt สำหรับ Gatekeeper Agent (E.D.I.T.H.)</h2>
+
+<pre><code># TWO-STEP TICKET CONFIRMATION & RESET RULES
+
+1. NEW INCIDENT INTAKE:
+   - When customer reports a new bug/outage/issue AND no pending confirmation in history:
+   - Output ticket_action: "CONFIRM_REQUIRED"
+   - Extract subject, summary, priority, severity
+   - The system will summarize and ask the customer to confirm.
+
+2. CUSTOMER CONFIRMATION:
+   - When previous message asked for confirmation AND customer says "ยืนยัน", "ถูกต้อง", "ใช่ค่ะ", "โอเค":
+   - Output ticket_action: "CREATE"
+   - Output targetAgent: "support"
+   - Pass accumulated subject and summary to create the ticket.
+
+3. CUSTOMER CORRECTION:
+   - When customer modifies details ("ไม่ใช่ค่ะ", "ขอแก้เป็น..."):
+   - Output ticket_action: "CONFIRM_REQUIRED" with updated summary.
+
+4. CUSTOMER CANCELLATION / RESET:
+   - When customer says "ยกเลิก", "ไม่แจ้งแล้ว", "แก้ได้แล้ว", "รีเซ็ต":
+   - Output ticket_action: "NONE"
+   - Output intent: "CANCEL_RESET"
+   - Set reply_text to polite cancellation response.</code></pre>
+
+<h2>6. สรุปคุณประโยชน์ (Key Business Value)</h2>
+<ul>
+  <li>🛡️ <strong>Zero Junk Tickets:</strong> ป้องกันการสร้างตั๋วขยะหรือตั๋วที่ลูกค้าไม่ได้ตั้งใจเปิดได้ 100%</li>
+  <li>🎯 <strong>High Data Accuracy:</strong> ข้อมูลชื่อระบบ เมนู และอาการ ได้รับการตรวจสอบซ้ำจากลูกค้าก่อนส่งต่อ Developer</li>
+  <li>🤝 <strong>Human-Centric Experience:</strong> บทสนทนาเป็นธรรมชาติ สุภาพ และเพิ่มความมั่นใจให้แก่ผู้ใช้งานระบบ</li>
+  <li>⚡ <strong>Clean Plane.so Board:</strong> บอร์ดบริหารจัดการงานของทีมพัฒนาสะอาด ปราศจากตั๋วโมฆะ</li>
+</ul>
+
+</body>
+</html>

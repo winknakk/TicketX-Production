@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TicketX / AutomationX - Two-Step Ticket Confirmation & Reset Flow</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Fira+Code:wght@400;500&family=Sarabun:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  @page {
+    size: A4 portrait;
+    margin: 14mm 12mm 14mm 12mm;
+  }
+  
+  * {
+    box-sizing: border-box;
+  }
+
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    color: #1e293b;
+    background-color: #ffffff;
+    line-height: 1.55;
+    font-size: 13px;
+    margin: 0;
+    padding: 0;
+  }
+
+  .header {
+    background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+    color: #ffffff;
+    padding: 22px 24px;
+    border-radius: 12px;
+    margin-bottom: 20px;
+    border-left: 6px solid #6366f1;
+    box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+  }
+
+  .header h1 {
+    margin: 0 0 6px 0;
+    font-size: 20px;
+    font-weight: 700;
+    color: #ffffff;
+    letter-spacing: -0.02em;
+  }
+
+  .header p {
+    margin: 3px 0;
+    font-size: 12.5px;
+    color: #cbd5e1;
+  }
+
+  .badge {
+    display: inline-block;
+    background-color: #4f46e5;
+    color: #ffffff;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 10px;
+    border-radius: 9999px;
+    margin-top: 6px;
+  }
+
+  h2 {
+    font-size: 15px;
+    font-weight: 700;
+    color: #0f172a;
+    border-bottom: 2px solid #e2e8f0;
+    padding-bottom: 5px;
+    margin-top: 20px;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  h3 {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: #334155;
+    margin-top: 14px;
+    margin-bottom: 6px;
+  }
+
+  .card-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+
+  .card {
+    background-color: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+
+  .card-danger {
+    background-color: #fef2f2;
+    border-color: #fecaca;
+    border-left: 4px solid #ef4444;
+  }
+
+  .card-success {
+    background-color: #f0fdf4;
+    border-color: #bbf7d0;
+    border-left: 4px solid #22c55e;
+  }
+
+  .card-title {
+    font-weight: 700;
+    font-size: 13.5px;
+    margin-bottom: 6px;
+  }
+
+  .card-danger .card-title { color: #991b1b; }
+  .card-success .card-title { color: #166534; }
+
+  ul {
+    margin: 4px 0;
+    padding-left: 18px;
+  }
+
+  li {
+    margin-bottom: 4px;
+  }
+
+  .diagram-box {
+    background-color: #f8fafc;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    padding: 14px;
+    margin: 12px 0;
+    page-break-inside: avoid;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0;
+    font-size: 12px;
+  }
+
+  th, td {
+    border: 1px solid #cbd5e1;
+    padding: 8px 10px;
+    text-align: left;
+    vertical-align: top;
+  }
+
+  th {
+    background-color: #f1f5f9;
+    font-weight: 700;
+    color: #1e293b;
+  }
+
+  tr:nth-child(even) {
+    background-color: #f8fafc;
+  }
+
+  .chat-box {
+    background-color: #f1f5f9;
+    border-radius: 8px;
+    padding: 12px;
+    margin: 10px 0;
+    font-size: 12.5px;
+  }
+
+  .chat-user {
+    color: #0369a1;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+
+  .chat-bot {
+    color: #4338ca;
+    font-weight: 600;
+    margin-bottom: 4px;
+    margin-top: 6px;
+  }
+
+  .chat-bubble {
+    background: #ffffff;
+    border: 1px solid #cbd5e1;
+    padding: 8px 12px;
+    border-radius: 6px;
+    margin-bottom: 6px;
+  }
+
+  code {
+    font-family: 'Fira Code', monospace;
+    font-size: 11.5px;
+    background-color: #f1f5f9;
+    color: #475569;
+    padding: 2px 5px;
+    border-radius: 4px;
+    border: 1px solid #e2e8f0;
+  }
+
+  pre {
+    font-family: 'Fira Code', monospace;
+    background-color: #0f172a;
+    color: #f8fafc;
+    padding: 12px;
+    border-radius: 6px;
+    font-size: 11px;
+    line-height: 1.45;
+    overflow-x: auto;
+  }
+
+  .flow-step {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+
+  .step-num {
+    background-color: #4f46e5;
+    color: #ffffff;
+    font-weight: 700;
+    font-size: 11px;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .step-content {
+    flex: 1;
+  }
+
+  .page-break {
+    page-break-before: always;
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>🚀 Two-Step Ticket Confirmation & Reset Flow Architecture</h1>
+  <p>Pre-Ticket Verification, Context Modification & Cancellation System (TicketX / AutomationX)</p>
+  <p><strong>System Architecture & Flow Prompt Engineering Specification</strong> | Date: August 31, 2026</p>
+  <span class="badge">Architecture & Engineering Specification</span>
+</div>
+
+<h2>1. Background & Problem Statement</h2>
+
+<div class="card-grid">
+  <div class="card card-danger">
+    <div class="card-title">❌ Legacy System (Immediate Ticket Creation)</div>
+    <ul>
+      <li><strong>Instant creation on first turn:</strong> Bot immediately invoked <code>create_ticket</code> upon receiving the first customer report.</li>
+      <li><strong>Junk / Orphaned Tickets:</strong> Typos, wrong module selections, or customer self-resolutions produced invalid tickets on Plane.so.</li>
+      <li><strong>No Review / Reset Mechanism:</strong> Customers had no opportunity to review, correct, or cancel before developer assignment.</li>
+    </ul>
+  </div>
+
+  <div class="card card-success">
+    <div class="card-title">🎯 New Architecture (Two-Step Confirmation)</div>
+    <ul>
+      <li><strong>Intake & Summarize First:</strong> Extracts module, symptom, and severity, presenting a concise summary for confirmation.</li>
+      <li><strong>Confirmed-only Creation:</strong> Tickets (<code>TCK-2026-xxxxx</code>) are created in PostgreSQL and Plane.so only after explicit customer consent.</li>
+      <li><strong>Full Support for Edit & Reset:</strong> Allows customers to modify details or abort seamlessly without leaving DB clutter.</li>
+    </ul>
+  </div>
+</div>
+
+<h2>2. Core Execution Flow</h2>
+
+<div class="diagram-box">
+  <div class="flow-step">
+    <div class="step-num">1</div>
+    <div class="step-content">
+      <strong>Customer Incident Intake:</strong> Customer sends an issue description in LINE (e.g. <em>"Reporting an issue: Loan Repayment System. Need to revert status from Paid to Pending Payment."</em>)
+    </div>
+  </div>
+  <div class="flow-step">
+    <div class="step-num">2</div>
+    <div class="step-content">
+      <strong>AI Gatekeeper Analysis:</strong> E.D.I.T.H. extracts entities and flags the action as <code>CONFIRM_REQUIRED</code> (No database insertion performed).
+    </div>
+  </div>
+  <div class="flow-step">
+    <div class="step-num">3</div>
+    <div class="step-content">
+      <strong>Summary & Confirmation Prompt:</strong> Bot replies in LINE with a structured summary asking the customer to confirm.
+    </div>
+  </div>
+  <div class="flow-step">
+    <div class="step-num">4</div>
+    <div class="step-content">
+      <strong>Customer Decision Handling:</strong>
+      <ul style="margin-top:4px;">
+        <li>✅ <strong>Customer Confirms ("Confirm / Yes"):</strong> Executes Sub Flow ➔ Creates <code>TCK-2026-90928</code> ➔ Syncs to Plane.so ➔ Returns Ticket ID & SLA.</li>
+        <li>📝 <strong>Customer Modifies ("Change to..."):</strong> Bot updates the issue summary and re-confirms.</li>
+        <li>❌ <strong>Customer Cancels ("Cancel / Fixed already"):</strong> Bot aborts the ticket creation and acknowledges politely with zero DB pollution.</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<h2>3. Realistic Dialogue Walkthrough</h2>
+
+<div class="chat-box">
+  <div class="chat-user">👤 Customer:</div>
+  <div class="chat-bubble">Reporting an issue: Loan Repayment System. Need to revert status from Paid to Pending Payment.</div>
+  
+  <div class="chat-bot">🤖 Bot (Summary & Confirmation Prompt):</div>
+  <div class="chat-bubble">
+    Understood. Here is the summary of your support request:<br>
+    📌 <strong>Module/System:</strong> Loan Repayment System<br>
+    📝 <strong>Details:</strong> Revert status from Paid to Pending Payment<br><br>
+    Is this information correct? <em>(Reply 'Confirm' to submit the ticket or reply with any corrections.)</em>
+  </div>
+
+  <div class="chat-user">👤 Customer:</div>
+  <div class="chat-bubble">Confirm</div>
+
+  <div class="chat-bot">🤖 Bot (Ticket Created Successfully):</div>
+  <div class="chat-bubble">
+    Your request has been registered! Tracking Ticket: <strong>TCK-2026-90928</strong> 📋<br>
+    Our engineering team will investigate and complete the action within today by 13:19.
+  </div>
+</div>
+
+<div class="page-break"></div>
+
+<h2>4. Conversation State Transition Table</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th>Current State</th>
+      <th>Customer Input</th>
+      <th>Gatekeeper Action</th>
+      <th>Next State</th>
+      <th>System Behavior</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>IDLE</strong> (Standard)</td>
+      <td>Reports new bug / outage / error</td>
+      <td><code>CONFIRM_REQUIRED</code></td>
+      <td><strong>PENDING_CONFIRMATION</strong></td>
+      <td>Summarize issue and prompt confirmation in LINE (No DB record).</td>
+    </tr>
+    <tr>
+      <td><strong>PENDING_CONFIRMATION</strong></td>
+      <td>"Confirm", "Correct", "Yes", "OK"</td>
+      <td><code>CREATE</code> (Confirmed)</td>
+      <td><strong>TICKET_CREATED</strong></td>
+      <td>Create ticket in PostgreSQL ➔ Plane.so ➔ Return TCK code.</td>
+    </tr>
+    <tr>
+      <td><strong>PENDING_CONFIRMATION</strong></td>
+      <td>"No", "Change to...", "Typo"</td>
+      <td><code>CONFIRM_REQUIRED</code></td>
+      <td><strong>PENDING_CONFIRMATION</strong></td>
+      <td>Update issue context and resend updated summary to re-confirm.</td>
+    </tr>
+    <tr>
+      <td><strong>PENDING_CONFIRMATION</strong></td>
+      <td>"Cancel", "Nevermind", "Resolved"</td>
+      <td><code>CANCEL_RESET</code></td>
+      <td><strong>IDLE</strong></td>
+      <td>Abort ticket creation, reset state, and acknowledge politely.</td>
+    </tr>
+    <tr>
+      <td><strong>IDLE</strong></td>
+      <td>Manuals / Policy / FAQ questions</td>
+      <td><code>DOCS_INQUIRY</code></td>
+      <td><strong>IDLE</strong></td>
+      <td>Retrieve and answer from project documentation (Sub Flow Docs).</td>
+    </tr>
+    <tr>
+      <td><strong>IDLE</strong></td>
+      <td>Request human agent / manager</td>
+      <td><code>HUMAN_REQUEST</code></td>
+      <td><strong>HUMAN_TAKEOVER</strong></td>
+      <td>Dispatch <code>human_notify</code> webhook and hand over to human agent.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>5. Gatekeeper Prompt Configuration (E.D.I.T.H.)</h2>
+
+<pre><code># TWO-STEP TICKET CONFIRMATION & RESET RULES
+
+1. NEW INCIDENT INTAKE:
+   - When customer reports a new bug/outage/issue AND no pending confirmation in history:
+   - Output ticket_action: "CONFIRM_REQUIRED"
+   - Extract subject, summary, priority, severity
+   - The system will summarize and ask the customer to confirm before creating the ticket.
+
+2. CUSTOMER CONFIRMATION:
+   - When previous message asked for confirmation AND customer confirms ("Confirm", "Correct", "Yes", "OK", "Proceed"):
+   - Output ticket_action: "CREATE"
+   - Output targetAgent: "support"
+   - Pass accumulated subject and summary to create the ticket.
+
+3. CUSTOMER CORRECTION:
+   - When customer modifies details ("No, it is...", "Change to..."):
+   - Output ticket_action: "CONFIRM_REQUIRED" with updated summary.
+
+4. CUSTOMER CANCELLATION / RESET:
+   - When customer says "Cancel", "Nevermind", "Resolved", "Reset":
+   - Output ticket_action: "NONE"
+   - Output intent: "CANCEL_RESET"
+   - Set reply_text to a polite cancellation acknowledgement.</code></pre>
+
+<h2>6. Key Business Value</h2>
+<ul>
+  <li>🛡️ <strong>Zero Junk Tickets:</strong> 100% prevention of accidental, unverified, or misdirected ticket creation.</li>
+  <li>🎯 <strong>High Data Accuracy:</strong> Pre-validated subsystem names and symptoms save engineering triage time.</li>
+  <li>🤝 <strong>Human-Centric UX:</strong> Reassuring, conversational verification that builds user satisfaction.</li>
+  <li>⚡ <strong>Clean Plane.so Board:</strong> Developer sprint boards remain clean and free from canceled tickets.</li>
+</ul>
+
+</body>
+</html>
