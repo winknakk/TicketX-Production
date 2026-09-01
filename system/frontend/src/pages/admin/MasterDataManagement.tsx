@@ -168,9 +168,9 @@ export function MasterDataManagement() {
     setError(null);
     try {
       const [projRes, custRes, idenRes] = await Promise.all([
-        fetch(`${apiBaseUrl}/api/v1/admin/master-data/projects`).then((r) => r.json()),
-        fetch(`${apiBaseUrl}/api/v1/admin/master-data/customers`).then((r) => r.json()),
-        fetch(`${apiBaseUrl}/api/v1/admin/master-data/identities`).then((r) => r.json()),
+        apiFetch(`${apiBaseUrl}/api/v1/admin/master-data/projects`).then((r) => r.json()),
+        apiFetch(`${apiBaseUrl}/api/v1/admin/master-data/customers`).then((r) => r.json()),
+        apiFetch(`${apiBaseUrl}/api/v1/admin/master-data/identities`).then((r) => r.json()),
       ]);
 
       if (projRes.success) setProjects(projRes.projects || []);
@@ -424,7 +424,7 @@ export function MasterDataManagement() {
                 className="hover:text-destructive text-primary/70 transition cursor-pointer font-bold ml-1"
                 title="Clear project & deeper filters"
               >
-                âœ•
+                ✕
               </button>
             </span>
           )}
@@ -437,7 +437,7 @@ export function MasterDataManagement() {
                 className="hover:text-destructive text-primary/70 transition cursor-pointer font-bold ml-1"
                 title="Clear customer filter"
               >
-                âœ•
+                ✕
               </button>
             </span>
           )}

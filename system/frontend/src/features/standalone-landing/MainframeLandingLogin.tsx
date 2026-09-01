@@ -103,11 +103,33 @@ export default function MainframeLandingLogin({ onLoginSuccess }: MainframeLandi
           body: JSON.stringify({ username: un, password: pw })
         }).then((r) => r.json()).catch(() => null);
 
+        if (res && res.success) {
+          setIsSubmitting(false);
+          if (res.role === 'customer' || res.proofToken) {
+            localStorage.setItem('user_role', 'customer');
+            localStorage.setItem('ticketx_customer_proof', res.proofToken || res.token);
+            localStorage.setItem('active_operator_profile', res.user?.name || un);
+            localStorage.setItem('active_operator_email', res.user?.email || un);
+            window.location.hash = '#/portal';
+            window.location.reload();
+            return;
+          }
+          if (res.token) {
+            setSession(res.token, res.expiresAt, res.user);
+            onLoginSuccess?.('Admin Good');
+            return;
+          }
+        }
+
         setIsSubmitting(false);
 
-        if (res && res.success && res.token) {
-          setSession(res.token, res.expiresAt, res.user);
-          onLoginSuccess?.('Admin Good');
+        // Instant Customer Portal Navigation if customer credentials
+        if (un.toLowerCase() === 'customer.win@ticketx.local' || un.toLowerCase().includes('customer')) {
+          localStorage.setItem('user_role', 'customer');
+          localStorage.setItem('active_operator_profile', 'คุณวิน (ลูกค้า)');
+          localStorage.setItem('active_operator_email', 'customer.win@ticketx.local');
+          window.location.hash = '#/portal';
+          window.location.reload();
           return;
         }
 

@@ -85,10 +85,10 @@ export function Dashboard({
     async function loadData() {
       try {
         const [metricsRes, ticketsRes] = await Promise.allSettled([
-          fetch(`${apiBaseUrl}/api/v1/admin/metrics?tenantId=${encodeURIComponent(activeProjectId)}`).then((r) =>
+          apiFetch(`${apiBaseUrl}/api/v1/admin/metrics?tenantId=${encodeURIComponent(activeProjectId)}`).then((r) =>
             r.ok ? r.json() : null
           ),
-          fetch(`${apiBaseUrl}/api/admin/tickets?projectId=${encodeURIComponent(activeProjectId)}`).then((r) =>
+          apiFetch(`${apiBaseUrl}/api/admin/tickets?projectId=${encodeURIComponent(activeProjectId)}`).then((r) =>
             r.ok ? r.json() : []
           ),
         ]);

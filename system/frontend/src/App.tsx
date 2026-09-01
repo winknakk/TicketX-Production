@@ -11,6 +11,7 @@ import { Analytics } from './pages/Analytics';
 import { TraceViewer } from './pages/TraceViewer';
 
 import { CustomerPortal } from './pages/CustomerPortal';
+import { CustomerWebApp } from './features/customer-web/CustomerWebApp';
 import { MasterDataManagement } from './pages/admin/MasterDataManagement';
 import { CenterIamManagement } from './components/admin/CenterIamManagement';
 import { PlaneIntegrationsManagement } from './components/admin/PlaneIntegrationsManagement';
@@ -53,7 +54,18 @@ interface Toast {
 
 
 
+function isCustomerAppRoute(): boolean {
+  const path = window.location.pathname;
+  const hash = window.location.hash.replace(/^#\/?/, '').split('/')[0].split('?')[0];
+  const customerRoutes = ['portal', 'customer', 'support', 'tickets', 'help'];
+  if (customerRoutes.includes(hash)) return true;
+  if (customerRoutes.some((r) => path === `/${r}` || path.startsWith(`/${r}/`))) return true;
+  const role = localStorage.getItem('user_role');
+  return role === 'customer';
+}
+
 function isLandingRoute(): boolean {
+  if (isCustomerAppRoute()) return false;
   const path = window.location.pathname;
   const hash = window.location.hash.replace(/^#\/?/, '').split('/')[0];
   if (hash === 'landing' || hash === 'hub') return true;
@@ -62,6 +74,7 @@ function isLandingRoute(): boolean {
 }
 
 function isLoginRoute(): boolean {
+  if (isCustomerAppRoute()) return false;
   const path = window.location.pathname;
   const hash = window.location.hash.replace(/^#\/?/, '').split('/')[0];
   return hash === 'login' || path === '/login';
@@ -85,6 +98,7 @@ export default function App() {
   const [conversationUpdatedAt, setConversationUpdatedAt] = useState<Date | null>(null);
   const [isLanding, setIsLanding] = useState<boolean>(isLandingRoute);
   const [isLogin, setIsLogin] = useState<boolean>(isLoginRoute);
+  const [isCustomerApp, setIsCustomerApp] = useState<boolean>(isCustomerAppRoute);
   const [activeTab, setActiveTabState] = useState<AppTab>(tabFromLocation);
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const [backendHealthy, setBackendHealthy] = useState<boolean | null>(null);
@@ -93,6 +107,21 @@ export default function App() {
   const [realtimeMessage, setRealtimeMessage] = useState<{ conversationId: string; sequence: number } | null>(null);
   const [targetConvId, setTargetConvId] = useState<string | null>(null);
   const [isCmdPaletteOpen, setIsCmdPaletteOpen] = useState(false);
+
+  useEffect(() => {
+    const handleLocationChange = () => {
+      setIsCustomerApp(isCustomerAppRoute());
+      setIsLanding(isLandingRoute());
+      setIsLogin(isLoginRoute());
+      setActiveTabState(tabFromLocation());
+    };
+    window.addEventListener('hashchange', handleLocationChange);
+    window.addEventListener('popstate', handleLocationChange);
+    return () => {
+      window.removeEventListener('hashchange', handleLocationChange);
+      window.removeEventListener('popstate', handleLocationChange);
+    };
+  }, []);
 
   useEffect(() => {
     const handleToggle = () => setIsCmdPaletteOpen((prev) => !prev);
@@ -335,6 +364,10 @@ export default function App() {
     setActiveTab('conversations');
   }, [setActiveTab]);
 
+  if (isCustomerApp) {
+    return <CustomerWebApp />;
+  }
+
   if (isLogin || isLanding) {
     return (
       <MainframeLandingLogin
@@ -343,7 +376,7 @@ export default function App() {
           setIsLanding(false);
           const role = localStorage.getItem('user_role');
           if (role === 'customer') {
-            setActiveTab('portal');
+            setIsCustomerApp(true);
           } else {
             setActiveTab('dashboard');
           }
@@ -360,7 +393,6 @@ export default function App() {
       case 'dashboard': return <Dashboard apiBaseUrl={API_BASE_URL} conversations={conversations as any} conversationsLoading={conversationLoading} conversationsError={conversationError} conversationsUpdatedAt={conversationUpdatedAt} backendHealthy={backendHealthy} refreshConversations={() => fetchConversations(true)} onNavigate={setActiveTab} />;
       case 'conversations': return <Conversations apiBaseUrl={API_BASE_URL} conversations={conversations} setConversations={setConversations} showToast={showToast} refreshConversations={() => fetchConversations(true)} initialSelectedConvId={targetConvId} clearInitialSelectedConvId={() => setTargetConvId(null)} conversationsLoading={conversationLoading} conversationsError={conversationError} realtimeMessage={realtimeMessage} />;
       case 'tickets': return <Tickets apiBaseUrl={API_BASE_URL} showToast={showToast} />;
-      case 'portal': return <CustomerPortal />;
       case 'directory': return <Customers conversations={conversations} onOpenConversation={openConversation} loading={conversationLoading} error={conversationError} />;
       case 'center-iam': return isSuperAdmin ? <div className="p-6 sm:p-8"><CenterIamManagement /></div> : <Dashboard apiBaseUrl={API_BASE_URL} conversations={conversations as any} conversationsLoading={conversationLoading} conversationsError={conversationError} conversationsUpdatedAt={conversationUpdatedAt} backendHealthy={backendHealthy} refreshConversations={() => fetchConversations(true)} onNavigate={setActiveTab} />;
       case 'master-data': return isSuperAdmin ? <MasterDataManagement /> : <Dashboard apiBaseUrl={API_BASE_URL} conversations={conversations as any} conversationsLoading={conversationLoading} conversationsError={conversationError} conversationsUpdatedAt={conversationUpdatedAt} backendHealthy={backendHealthy} refreshConversations={() => fetchConversations(true)} onNavigate={setActiveTab} />;

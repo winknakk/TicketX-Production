@@ -29,7 +29,8 @@ function stripTrailingSlash(url: string): string {
 }
 
 export function resolveApiBaseUrl(): string {
-  const configured = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL;
+  const env = typeof import.meta !== 'undefined' ? (import.meta as any).env : undefined;
+  const configured = env?.VITE_API_URL || env?.VITE_API_BASE_URL;
   if (configured) return stripTrailingSlash(String(configured));
 
   // No window means no origin to borrow (tests, any non-browser evaluation).

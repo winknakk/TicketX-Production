@@ -58,16 +58,16 @@ const renderCreatorBadge = (ticket: TicketRecord) => {
 
   switch (rawType) {
     case 'AI_BOT':
-      return <StatusBadge tone="information">ðŸ¤– AI Bot</StatusBadge>;
+      return <StatusBadge tone="information">🤖 AI Bot</StatusBadge>;
     case 'HUMAN_AGENT':
     case 'AGENT':
-      return <StatusBadge tone="claimed">ðŸŽ§ {name || 'Agent'}</StatusBadge>;
+      return <StatusBadge tone="claimed">🎧 {name || 'Agent'}</StatusBadge>;
     case 'PLANE_IO':
     case 'PLANE':
-      return <StatusBadge tone="warning">âœˆï¸ {name || 'Plane.io'}</StatusBadge>;
+      return <StatusBadge tone="warning">✈️ {name || 'Plane.io'}</StatusBadge>;
     case 'CUSTOMER':
     default:
-      return <StatusBadge tone="neutral">ðŸ‘¤ {name || 'Customer'}</StatusBadge>;
+      return <StatusBadge tone="neutral">👤 {name || 'Customer'}</StatusBadge>;
   }
 };
 
@@ -216,7 +216,7 @@ export function Tickets({ apiBaseUrl, showToast }: TicketsProps) {
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <SearchField
           label="Search tickets"
-          placeholder="Search ID, subject, creator, or roomâ€¦"
+          placeholder="Search ID, subject, creator, or room…"
           value={search}
           onChange={(event) => setSearch(event.target.value)}
           className="w-full lg:max-w-md"
@@ -408,7 +408,7 @@ export function Tickets({ apiBaseUrl, showToast }: TicketsProps) {
               {!planeIdOf(selected) && (
                 <Button className="w-full" onClick={() => promote(selected)} disabled={!idOf(selected) || promotingId === idOf(selected)}>
                   <ExternalLink className="h-4 w-4" />
-                  {promotingId === idOf(selected) ? 'Promotingâ€¦' : idOf(selected) ? 'Promote to Plane' : 'Promotion unavailable'}
+                  {promotingId === idOf(selected) ? 'Promoting…' : idOf(selected) ? 'Promote to Plane' : 'Promotion unavailable'}
                 </Button>
               )}
 
@@ -420,7 +420,7 @@ export function Tickets({ apiBaseUrl, showToast }: TicketsProps) {
                   disabled={restoringId === displayIdOf(selected)}
                 >
                   <RotateCcw className="h-4 w-4" />
-                  {restoringId === displayIdOf(selected) ? 'Restoringâ€¦' : 'Restore Ticket to Open'}
+                  {restoringId === displayIdOf(selected) ? 'Restoring…' : 'Restore Ticket to Open'}
                 </Button>
               ) : (
                 <Button

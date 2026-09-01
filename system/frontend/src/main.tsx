@@ -5,7 +5,6 @@ import App from './App.tsx'
 import { ThemeProvider } from './theme/themeProvider'
 import { ProjectProvider } from './context/ProjectContext'
 import { ErrorBoundary } from './components/ui/ErrorBoundary'
-import './widget/ShadowDomWrapper.tsx'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

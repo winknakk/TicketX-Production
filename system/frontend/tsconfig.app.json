@@ -28,5 +28,6 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": ["src/test-customer-frontend.ts", "src/test-websocket-auth-audit.ts", "src/**/*.test.ts"]
 }

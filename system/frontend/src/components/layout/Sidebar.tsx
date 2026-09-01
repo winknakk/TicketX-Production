@@ -27,7 +27,7 @@ function NavigationItems({
     customer: ['portal'],
     employee: ['dashboard', 'conversations', 'tickets', 'directory'],
     admin: ['dashboard', 'conversations', 'tickets', 'directory', 'analytics', 'sla-center', 'plane-integrations', 'settings'],
-    super_admin: ['dashboard', 'conversations', 'tickets', 'portal', 'directory', 'center-iam', 'master-data', 'traces', 'automation-flows', 'prompt-sessions', 'handoff-audit', 'analytics', 'sla-center', 'plane-integrations', 'settings']
+    super_admin: ['dashboard', 'conversations', 'tickets', 'directory', 'center-iam', 'master-data', 'traces', 'automation-flows', 'prompt-sessions', 'handoff-audit', 'analytics', 'sla-center', 'plane-integrations', 'settings']
   };
 
   const allowedTabs = allowedTabsByRole[userRole] || allowedTabsByRole.super_admin;

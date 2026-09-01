@@ -8,6 +8,7 @@ import { config } from "../../config/env";
 import { createLogger } from "../../observability/logger";
 import { CacheService } from "../../cache/CacheService";
 import { BackupManager } from "./BackupManager";
+import { nextSequenceId } from "./sequences";
 import { TakeoverManager } from "../../human-takeover/TakeoverManager";
 import { mapPlanePriorityToTicketPriority } from "../../services/planeWebhookService";
 
@@ -139,9 +140,11 @@ export class PostgresAdapter implements DatabaseAdapter {
 
       // Write transactionally to outbox_events
       await pool.query(
-        `INSERT INTO outbox_events (event_type, payload, status, attempts)
-         VALUES ($1, $2, $3, $4)`,
+        `INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload, status, attempts)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         [
+          "ticket",
+          ticketNumber,
           "TicketCreated",
           JSON.stringify({ ticketId: ticketNumber }),
           "pending",
@@ -308,8 +311,7 @@ export class PostgresAdapter implements DatabaseAdapter {
           "id"
         );
 
-        const maxIdentRes = await pool.query("SELECT COALESCE(MAX(CASE WHEN id::text ~ '^[0-9]+$' THEN id::bigint ELSE 0 END), 0) + 1 AS next_id FROM identities");
-        const nextIdentId = maxIdentRes.rows[0].next_id.toString();
+        const nextIdentId = await nextSequenceId(pool, "identities");
 
         const newIdentity = await pool.query(
           `INSERT INTO identities (id, profile_id, channel, channel_ref)
@@ -340,8 +342,7 @@ export class PostgresAdapter implements DatabaseAdapter {
         return convResult.rows[0].id.toString();
       }
 
-      const maxConvRes = await pool.query("SELECT COALESCE(MAX(CASE WHEN id::text ~ '^[0-9]+$' THEN id::bigint ELSE 0 END), 0) + 1 AS next_id FROM conversations");
-      const nextConvId = maxConvRes.rows[0].next_id;
+      const nextConvId = await nextSequenceId(pool, "conversations");
 
       const newConv = await pool.query(
         `INSERT INTO conversations (id, identity_id, channel, status, handled_by)
@@ -920,10 +921,8 @@ export class PostgresAdapter implements DatabaseAdapter {
       conditions.push(`t.conversation_id IN (SELECT id FROM conversations WHERE identity_id = $${queryParams.length})`);
     }
     if (profileId) {
-      const parsed = parseInt(profileId, 10);
-      if (isNaN(parsed)) return [];
-      queryParams.push(parsed);
-      conditions.push(`t.conversation_id IN (SELECT id FROM conversations WHERE identity_id IN (SELECT id FROM identities WHERE profile_id = $${queryParams.length}))`);
+      queryParams.push(String(profileId).trim());
+      conditions.push(`t.conversation_id IN (SELECT id FROM conversations WHERE identity_id IN (SELECT id FROM identities WHERE profile_id::text = $${queryParams.length}))`);
     }
 
     if (conditions.length > 0) {
