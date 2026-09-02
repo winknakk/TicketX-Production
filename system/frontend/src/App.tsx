@@ -205,6 +205,7 @@ export default function App() {
   }, []);
 
   const fetchConversations = useCallback(async (silent = false) => {
+    if (isLogin || isLanding || isCustomerApp || !isAuthenticated()) return;
     const requestId = ++conversationRequestRef.current;
     const projectId = activeProjectId;
     if (!silent) setConversationLoading(true);
@@ -264,7 +265,7 @@ export default function App() {
         setConversationLoading(false);
       }
     }
-  }, [activeProjectId, showToast]);
+  }, [activeProjectId, showToast, isLogin, isLanding, isCustomerApp]);
 
   useEffect(() => {
     ++conversationRequestRef.current;
@@ -278,14 +279,16 @@ export default function App() {
   }, [activeProjectId]);
 
   useEffect(() => {
+    if (isLogin || isLanding || isCustomerApp || !isAuthenticated()) return;
     checkHealth();
     fetchConversations();
     const healthInterval = window.setInterval(checkHealth, 15000);
     const conversationInterval = window.setInterval(() => fetchConversations(true), 30000);
     return () => { window.clearInterval(healthInterval); window.clearInterval(conversationInterval); };
-  }, [checkHealth, fetchConversations]);
+  }, [checkHealth, fetchConversations, isLogin, isLanding, isCustomerApp]);
 
   useEffect(() => {
+    if (isLogin || isLanding || isCustomerApp || !isAuthenticated()) return;
     let socket: WebSocket | null = null;
     let reconnectTimer: number | undefined;
     let disposed = false;

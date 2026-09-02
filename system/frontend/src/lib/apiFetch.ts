@@ -20,10 +20,13 @@ export async function apiFetch(url: string, init?: RequestInit): Promise<Respons
   const response = await fetch(url, { ...init, headers });
 
   // A 401 means the session is gone or was never valid. Sending the operator
-  // back to the login screen is the only useful action, and it stops the app
-  // from rendering empty views that look like missing data.
+  // back to the login screen is the only useful action for authenticated views.
   if (response.status === 401) {
-    redirectToLogin();
+    const hash = window.location.hash;
+    const isCustomer = localStorage.getItem('user_role') === 'customer';
+    if (!hash.startsWith('#/portal') && !hash.startsWith('#/login') && !hash.startsWith('#/landing') && !isCustomer) {
+      redirectToLogin();
+    }
   }
 
   return response;

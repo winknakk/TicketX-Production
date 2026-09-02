@@ -3,7 +3,7 @@ import { usePending } from '@/components/ui/pending';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Loader2, ArrowRight, UserCheck, ChevronRight, Phone, ShieldCheck } from 'lucide-react';
+import { Loader2, ArrowRight, UserCheck, ChevronRight, Phone, ShieldCheck, KeyRound, Lock, AlertCircle, CheckCircle2, ShieldAlert } from 'lucide-react';
 import { useProject } from '@/context/ProjectContext';
 import { setSession } from '../../lib/session';
 import { API_BASE_URL } from '../../lib/apiBaseUrl';
@@ -30,6 +30,15 @@ export default function MainframeLandingLogin({ onLoginSuccess }: MainframeLandi
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCenterSubmitting, setIsCenterSubmitting] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
+
+  // Center 2FA Modal State
+  const [show2FAModal, setShow2FAModal] = useState(false);
+  const [twoFAMode, setTwoFAMode] = useState<'otp' | 'token'>('otp');
+  const [twoFAOtp, setTwoFAOtp] = useState(['', '', '', '', '', '']);
+  const [twoFAToken, setTwoFAToken] = useState('');
+  const [is2FASubmitting, setIs2FASubmitting] = useState(false);
+  const [twoFAError, setTwoFAError] = useState<string | null>(null);
+  const otpInputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   // Profile Selection Modal state
   const [showProfileSelector, setShowProfileSelector] = useState(false);
@@ -142,6 +151,76 @@ export default function MainframeLandingLogin({ onLoginSuccess }: MainframeLandi
     [username, password, onLoginSuccess]
   );
 
+  // Complete session storage and login redirect
+  const finalizeCenterLogin = useCallback(
+    async (token: string, idToken: string = '', fallbackProfile?: any) => {
+      const apiBaseUrl = API_BASE_URL;
+      const cleanToken = token.trim().replace(/^Bearer\s+/i, '').replace(/^"|"$/g, '');
+      
+      const completeRes = await fetch(`${apiBaseUrl}/api/v1/auth/center/complete-login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: cleanToken, idToken })
+      }).then((r) => r.json()).catch(() => null);
+
+      if (!completeRes || !completeRes.sessionToken) {
+        setTwoFAError(completeRes?.error || completeRes?.message || 'ไม่สามารถสร้าง TicketX Session จาก Token นี้ได้ กรุณาตรวจสอบ Token');
+        return;
+      }
+
+      const un = username.trim();
+      const profile = completeRes?.profile || fallbackProfile || {
+        email: un || 'operator@ticketx.io',
+        name: un || 'Operator',
+        role: 'admin',
+        orgId: 'org_avalant'
+      };
+
+      const cleanRole = (profile.role && profile.role !== 'customer') ? profile.role : 'admin';
+      const userProfile = {
+        ...profile,
+        role: cleanRole,
+        email: profile.email || un || 'watcharaphong.c@avlgb.com',
+        name: profile.name || un || 'Watcharaphong Chantree',
+        orgId: profile.orgId || 'org_avalant'
+      };
+
+      setSession(completeRes.sessionToken, completeRes.expiresAt, userProfile);
+      localStorage.setItem('center_token', cleanToken);
+      localStorage.setItem('user_role', cleanRole);
+      localStorage.setItem('active_org_id', userProfile.orgId || 'org_avalant');
+      localStorage.setItem('active_operator_profile', userProfile.name);
+      localStorage.setItem('active_operator_email', userProfile.email);
+      localStorage.setItem('active_operator_phone', userProfile.email);
+      if (profile.iam2_id) localStorage.setItem('center_iam2_id', profile.iam2_id);
+      if (profile.position_name) localStorage.setItem('center_position_name', profile.position_name);
+
+      setShow2FAModal(false);
+      onLoginSuccess?.('Admin Good');
+    },
+    [username, onLoginSuccess]
+  );
+
+  // Open Center IAM in a popup window
+  const openCenterSSOPopup = useCallback(() => {
+    try {
+      const width = 540;
+      const height = 720;
+      const left = window.screenX + (window.outerWidth - width) / 2;
+      const top = window.screenY + (window.outerHeight - height) / 2;
+      const popup = window.open(
+        'https://centerapp.io/',
+        'CenterIAMLoginPopup',
+        `width=${width},height=${height},left=${left},top=${top},status=no,resizable=yes,scrollbars=yes`
+      );
+      if (!popup || popup.closed || typeof popup.closed === 'undefined') {
+        setTwoFAError('เบราว์เซอร์บล็อกหน้าต่าง Popup กรุณากดยอมรับ Popup หรือกดปุ่มเปิดหน้าต่าง Center IAM');
+      }
+    } catch (e) {
+      // ignore
+    }
+  }, []);
+
   // Submit Center Login form
   const handleCenterLoginSubmit = useCallback(
     async (e: React.FormEvent) => {
@@ -198,49 +277,117 @@ export default function MainframeLandingLogin({ onLoginSuccess }: MainframeLandi
           };
           if (demoAccounts[un]) {
             setLoginError(`'${un}' เป็นบัญชี Demo ในเครื่อง (กรุณากดปุ่ม 'Sign in' สีดำด้านบน หรือใช้บัญชี Center IAM จริงเพื่อใช้ Login with Center)`);
-          } else {
-            setLoginError('Center Authentication failed. Check Center credentials or network connectivity.');
+            return;
           }
+
+          // If Center IAM returned 401 or failed (e.g. 2FA required), open SSO Assistant Modal & Popup
+          setTwoFAError(null);
+          setTwoFAMode('token');
+          setShow2FAModal(true);
+          openCenterSSOPopup();
           return;
         }
 
-        // 2. Complete Center Login flow via Backend (fetches orgs and get-my-role with idToken)
+        // Complete Center Login flow
         const idToken = centerRes?.IDToken || centerRes?.id_token || centerRes?.centerResponse?.IDToken || centerRes?.centerResponse?.id_token || '';
-        
-        const completeRes = await fetch(`${apiBaseUrl}/api/v1/auth/center/complete-login`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token, idToken })
-        }).then((r) => r.json()).catch(() => null);
-
+        await finalizeCenterLogin(token, idToken, centerRes?.profile);
         setIsCenterSubmitting(false);
-
-        const profile = completeRes?.profile || centerRes?.profile || {
-          email: un,
-          name: un,
-          role: 'admin',
-          orgId: 'org_avalant'
-        };
-
-        if (completeRes?.sessionToken) {
-          setSession(completeRes.sessionToken, completeRes.expiresAt, profile);
-        }
-        localStorage.setItem('center_token', token);
-        localStorage.setItem('user_role', profile.role || 'admin');
-        localStorage.setItem('active_org_id', profile.orgId || 'org_avalant');
-        localStorage.setItem('active_operator_profile', profile.name || un);
-        localStorage.setItem('active_operator_email', profile.email || un);
-        localStorage.setItem('active_operator_phone', profile.email || un);
-        if (profile.iam2_id) localStorage.setItem('center_iam2_id', profile.iam2_id);
-        if (profile.position_name) localStorage.setItem('center_position_name', profile.position_name);
-
-        onLoginSuccess?.('Admin Good');
       } catch (err: any) {
         setIsCenterSubmitting(false);
         setLoginError('Center login error: ' + (err?.message || 'Authentication service unreachable'));
       }
     },
-    [username, password, onLoginSuccess]
+    [username, password, finalizeCenterLogin, openCenterSSOPopup]
+  );
+
+  // Handle OTP digit changes
+  const handleOtpChange = (index: number, value: string) => {
+    const cleanValue = value.replace(/\D/g, '').slice(-1);
+    const newOtp = [...twoFAOtp];
+    newOtp[index] = cleanValue;
+    setTwoFAOtp(newOtp);
+
+    if (cleanValue && index < 5) {
+      otpInputRefs.current[index + 1]?.focus();
+    }
+  };
+
+  // Handle OTP backspace
+  const handleOtpKeyDown = (index: number, e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Backspace' && !twoFAOtp[index] && index > 0) {
+      otpInputRefs.current[index - 1]?.focus();
+    }
+  };
+
+  // Handle pasting 6-digit code
+  const handleOtpPaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+    e.preventDefault();
+    const pastedData = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, 6);
+    if (pastedData) {
+      const newOtp = ['', '', '', '', '', ''];
+      for (let i = 0; i < pastedData.length; i++) {
+        newOtp[i] = pastedData[i];
+      }
+      setTwoFAOtp(newOtp);
+      const nextIndex = Math.min(pastedData.length, 5);
+      otpInputRefs.current[nextIndex]?.focus();
+    }
+  };
+
+  // Handle 2FA verification submission
+  const handle2FASubmit = useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault();
+      setTwoFAError(null);
+      setIs2FASubmitting(true);
+
+      const un = username.trim();
+      const pw = password.trim();
+      const apiBaseUrl = API_BASE_URL;
+
+      try {
+        if (twoFAMode === 'otp') {
+          const otpCode = twoFAOtp.join('');
+          if (otpCode.length < 6) {
+            setTwoFAError('กรุณากรอกรหัส Authenticator 6 หลักให้ครบถ้วน');
+            setIs2FASubmitting(false);
+            return;
+          }
+
+          const res = await fetch(`${apiBaseUrl}/api/v1/auth/center-login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: un, password: pw, otp: otpCode })
+          }).then((r) => r.json()).catch(() => null);
+
+          const token = res?.token || res?.access_token || res?.centerResponse?.token || res?.centerResponse?.access_token;
+          if (!token) {
+            setIs2FASubmitting(false);
+            setTwoFAError(res?.message || 'รหัส Authenticator ไม่ถูกต้อง หรือหมดอายุ กรุณาลองใหม่อีกครั้ง หรือใช้วิธีวาง Token');
+            return;
+          }
+
+          const idToken = res?.IDToken || res?.id_token || res?.centerResponse?.IDToken || res?.centerResponse?.id_token || '';
+          await finalizeCenterLogin(token, idToken, res?.profile);
+          setIs2FASubmitting(false);
+        } else {
+          // Direct token mode
+          const cleanToken = twoFAToken.trim();
+          if (!cleanToken) {
+            setTwoFAError('กรุณาวาง Center Token (JWT)');
+            setIs2FASubmitting(false);
+            return;
+          }
+
+          await finalizeCenterLogin(cleanToken);
+          setIs2FASubmitting(false);
+        }
+      } catch (err: any) {
+        setIs2FASubmitting(false);
+        setTwoFAError('เกิดข้อผิดพลาดในการตรวจสอบ 2FA: ' + (err?.message || 'Network error'));
+      }
+    },
+    [username, password, twoFAMode, twoFAOtp, twoFAToken, finalizeCenterLogin]
   );
 
   // Select profile handler — show confirmation modal instead of auto-redirect
@@ -636,6 +783,172 @@ export default function MainframeLandingLogin({ onLoginSuccess }: MainframeLandi
                 <ArrowRight className="w-4 h-4" />
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 5. CENTER 2FA / SSO VERIFICATION MODAL */}
+      {show2FAModal && (
+        <div className="fixed inset-0 z-[70] bg-black/80 backdrop-blur-xl flex items-center justify-center p-4 sm:p-6 animate-in fade-in duration-200">
+          <div className="bg-white/95 backdrop-blur-2xl border border-black/15 rounded-3xl p-7 sm:p-9 max-w-lg w-full shadow-2xl space-y-6 text-black relative overflow-hidden">
+            {/* Ambient Glow */}
+            <div className="absolute -top-24 -right-24 w-48 h-48 bg-purple-500/10 rounded-full blur-3xl pointer-events-none" />
+
+            {/* Header */}
+            <div className="text-center space-y-2 relative z-10">
+              <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-gradient-to-tr from-indigo-600 to-purple-600 text-white shadow-lg mx-auto mb-1">
+                <KeyRound className="w-7 h-7" />
+              </div>
+              <h2
+                className="text-2xl sm:text-3xl font-bold text-black tracking-tight"
+                style={{ fontFamily: 'var(--font-heading)' }}
+              >
+                การตรวจสอบความปลอดภัย
+              </h2>
+              <p className="text-xs sm:text-sm text-black/60 max-w-sm mx-auto">
+                บัญชี <span className="font-semibold text-black">{username}</span> มีการเปิดใช้งาน 2FA บน Center IAM
+              </p>
+            </div>
+
+            {/* Mode Selector Tabs */}
+            <div className="flex rounded-xl bg-black/5 p-1 relative z-10">
+              <button
+                type="button"
+                onClick={() => setTwoFAMode('token')}
+                className={`flex-1 py-2 text-xs sm:text-sm font-semibold rounded-lg transition-all cursor-pointer ${
+                  twoFAMode === 'token'
+                    ? 'bg-white text-black shadow-sm'
+                    : 'text-black/50 hover:text-black'
+                }`}
+              >
+                Center SSO Token
+              </button>
+              <button
+                type="button"
+                onClick={() => setTwoFAMode('otp')}
+                className={`flex-1 py-2 text-xs sm:text-sm font-semibold rounded-lg transition-all cursor-pointer ${
+                  twoFAMode === 'otp'
+                    ? 'bg-white text-black shadow-sm'
+                    : 'text-black/50 hover:text-black'
+                }`}
+              >
+                Authenticator App
+              </button>
+            </div>
+
+            {/* Form */}
+            <form onSubmit={handle2FASubmit} className="space-y-5 relative z-10">
+              {twoFAMode === 'token' ? (
+                <div className="space-y-3">
+                  <div className="p-3.5 rounded-2xl bg-indigo-50 border border-indigo-100 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-indigo-900">ขั้นตอนการเข้าสู่ระบบแบบ SSO:</span>
+                      <button
+                        type="button"
+                        onClick={openCenterSSOPopup}
+                        className="text-[11px] font-semibold text-indigo-700 hover:text-indigo-900 underline cursor-pointer"
+                      >
+                        🔗 เปิดหน้าต่าง Center IAM
+                      </button>
+                    </div>
+                    <ol className="text-[11px] text-indigo-800 space-y-1 list-decimal list-inside">
+                      <li>เข้าสู่ระบบและยืนยัน 2FA ในหน้าต่าง <strong>Center IAM</strong> ที่เปิดขึ้นมา</li>
+                      <li>ในหน้า Center App กด <code>F12</code> ใน Console พิมพ์ <code>copy(localStorage.token)</code></li>
+                      <li>นำมากดวางในช่องด้านล่างนี้ แล้วกดปุ่มยืนยัน</li>
+                    </ol>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label htmlFor="twoFAToken" className="text-xs font-semibold text-black/80">
+                      Center Access Token / JWT
+                    </Label>
+                    <textarea
+                      id="twoFAToken"
+                      rows={3}
+                      placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                      value={twoFAToken}
+                      onChange={(e) => setTwoFAToken(e.target.value)}
+                      disabled={is2FASubmitting}
+                      className="w-full text-xs font-mono p-3 bg-white border border-black/20 focus:border-purple-600 focus:ring-purple-600/20 rounded-xl resize-none outline-none"
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="text-center">
+                    <Label className="text-xs text-black/70 font-medium">
+                      ป้อนรหัส 6 หลักที่สร้างโดย Authenticator app
+                    </Label>
+                  </div>
+
+                  {/* 6 Digit Input Boxes */}
+                  <div className="flex justify-center gap-2 sm:gap-3">
+                    {twoFAOtp.map((digit, idx) => (
+                      <input
+                        key={idx}
+                        ref={(el) => { otpInputRefs.current[idx] = el; }}
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        maxLength={1}
+                        value={digit}
+                        onChange={(e) => handleOtpChange(idx, e.target.value)}
+                        onKeyDown={(e) => handleOtpKeyDown(idx, e)}
+                        onPaste={handleOtpPaste}
+                        disabled={is2FASubmitting}
+                        className="w-11 h-13 sm:w-13 sm:h-15 text-center text-xl sm:text-2xl font-bold font-mono bg-white border-2 border-black/15 focus:border-purple-600 focus:ring-2 focus:ring-purple-600/20 rounded-2xl shadow-sm outline-none transition-all"
+                      />
+                    ))}
+                  </div>
+
+                  <p className="text-[11px] text-center text-black/40">
+                    เปิด Google Authenticator หรือ Authenticator App บนอุปกรณ์ของคุณแล้วนำรหัสมากรอก
+                  </p>
+                </div>
+              )}
+
+              {twoFAError && (
+                <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-800 text-xs font-medium flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
+                  <span>{twoFAError}</span>
+                </div>
+              )}
+
+              <div className="flex items-center gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShow2FAModal(false)}
+                  disabled={is2FASubmitting}
+                  className="flex-1 h-12 rounded-full border-2 border-black/15 text-black font-semibold text-sm hover:bg-black/5 transition-all cursor-pointer"
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  type="submit"
+                  disabled={is2FASubmitting}
+                  className="flex-1 h-12 bg-gradient-to-r from-blue-700 via-indigo-700 to-purple-800 text-white rounded-full font-semibold text-sm hover:from-blue-800 hover:to-purple-900 transition-all flex items-center justify-center gap-2 cursor-pointer shadow-lg active:scale-[0.98] disabled:opacity-50"
+                >
+                  {is2FASubmitting ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin text-white" />
+                      <span>กำลังตรวจสอบ...</span>
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck className="w-4 h-4" />
+                      <span>ยืนยันเข้าสู่ระบบ</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              <div className="pt-1 text-center">
+                <span className="inline-flex items-center gap-1.5 text-[11px] text-black/40 font-medium">
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                  ได้รับการคุ้มครองโดยระบบความปลอดภัย Avalant & Center IAM
+                </span>
+              </div>
+            </form>
           </div>
         </div>
       )}

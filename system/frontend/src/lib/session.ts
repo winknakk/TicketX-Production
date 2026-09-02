@@ -60,9 +60,11 @@ export function isAuthenticated(): boolean {
 
 /** Sends the operator to the login screen after the session is gone. */
 export function redirectToLogin(): void {
-  clearSession();
-  if (!window.location.hash.startsWith('#/login')) {
-    window.location.hash = '#/login';
-    window.location.reload();
+  const hash = window.location.hash;
+  if (hash.startsWith('#/portal') || hash.startsWith('#/login') || hash.startsWith('#/landing')) {
+    return;
   }
+  clearSession();
+  window.location.hash = '#/login';
+  window.location.reload();
 }
