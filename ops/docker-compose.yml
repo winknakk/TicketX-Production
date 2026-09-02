@@ -16,7 +16,7 @@ services:
   # ── Backend API Server ──
   ax-backend:
     build:
-      context: ./ticket_codebase
+      context: ../system/backend
       dockerfile: Dockerfile
     # REQUIRED in .env.production: SESSION_SECRET (>= 32 chars).
     # It signs operator sessions and AgentX execution-context tokens. The
@@ -38,7 +38,7 @@ services:
   # ── Background Workers ──
   ax-worker:
     build:
-      context: ./ticket_codebase
+      context: ../system/backend
       dockerfile: Dockerfile.worker
     # REQUIRED in .env.production: SESSION_SECRET (>= 32 chars).
     # It signs operator sessions and AgentX execution-context tokens. The
@@ -58,7 +58,8 @@ services:
   # ── Frontend SPA ──
   ax-frontend:
     build:
-      context: ./frontend
+      context: ../system/frontend
+      dockerfile: Dockerfile
     ports:
       - "5173:80"
     restart: unless-stopped
@@ -72,7 +73,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secure_pass}
     volumes:
       - pg-data:/var/lib/postgresql/data
-      - ./ticket_codebase/database/migrations:/docker-entrypoint-initdb.d:ro
+      - ../system/backend/database/migrations:/docker-entrypoint-initdb.d:ro
     ports:
       - "5432:5432"
     healthcheck:
