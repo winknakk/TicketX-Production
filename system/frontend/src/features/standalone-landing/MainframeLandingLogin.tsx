@@ -38,6 +38,9 @@ export default function MainframeLandingLogin({ onLoginSuccess }: MainframeLandi
   const [twoFAToken, setTwoFAToken] = useState('');
   const [is2FASubmitting, setIs2FASubmitting] = useState(false);
   const [twoFAError, setTwoFAError] = useState<string | null>(null);
+  // What Center asked for. `ref` ties a delivered code (email/SMS) to this
+  // login attempt and has to be sent back with it; an authenticator has none.
+  const [twoFAChallenge, setTwoFAChallenge] = useState<{ method: 'totp' | 'email' | 'sms'; ref: string | null } | null>(null);
   const otpInputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   // Profile Selection Modal state
@@ -132,16 +135,14 @@ export default function MainframeLandingLogin({ onLoginSuccess }: MainframeLandi
 
         setIsSubmitting(false);
 
-        // Instant Customer Portal Navigation if customer credentials
-        if (un.toLowerCase() === 'customer.win@ticketx.local' || un.toLowerCase().includes('customer')) {
-          localStorage.setItem('user_role', 'customer');
-          localStorage.setItem('active_operator_profile', 'คุณวิน (ลูกค้า)');
-          localStorage.setItem('active_operator_email', 'customer.win@ticketx.local');
-          window.location.hash = '#/portal';
-          window.location.reload();
-          return;
-        }
-
+        // A rejected login is a rejected login.
+        //
+        // This is where a block used to send anyone whose username contained
+        // "customer" to #/portal after the backend had already refused them —
+        // the same defect the comment at the top of this handler describes
+        // having removed for super_admin. It set user_role in localStorage with
+        // no token, so every portal request 401'd behind a signed-in-looking
+        // shell. The portal is reachable only with a token the server issued.
         setLoginError(res?.message || 'Invalid username or password.');
       } catch (err) {
         setIsSubmitting(false);
@@ -280,8 +281,27 @@ export default function MainframeLandingLogin({ onLoginSuccess }: MainframeLandi
             return;
           }
 
-          // If Center IAM returned 401 or failed (e.g. 2FA required), open SSO Assistant Modal & Popup
           setTwoFAError(null);
+
+          // Center names the second factor when it asks for one. Prompt for
+          // that, rather than sending everyone to the paste-a-token fallback:
+          // this branch used to open the SSO popup for every tokenless
+          // outcome, so an account with an authenticator was never actually
+          // asked for its code.
+          if (centerRes?.twoFactorRequired) {
+            setTwoFAChallenge({
+              method: centerRes.method === 'email' || centerRes.method === 'sms' ? centerRes.method : 'totp',
+              ref: centerRes.ref ?? null,
+            });
+            setTwoFAOtp(['', '', '', '', '', '']);
+            setTwoFAMode('otp');
+            setShow2FAModal(true);
+            return;
+          }
+
+          // Anything else — CORS, an outage, a genuinely wrong password — still
+          // falls back to the token assistant.
+          setTwoFAChallenge(null);
           setTwoFAMode('token');
           setShow2FAModal(true);
           openCenterSSOPopup();
@@ -357,7 +377,15 @@ export default function MainframeLandingLogin({ onLoginSuccess }: MainframeLandi
           const res = await fetch(`${apiBaseUrl}/api/v1/auth/center-login`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: un, password: pw, otp: otpCode })
+            // The method decides which field Center reads the code from, and a
+            // delivered code is rejected without the ref from its challenge.
+            body: JSON.stringify({
+              username: un,
+              password: pw,
+              otp: otpCode,
+              method: twoFAChallenge?.method ?? 'totp',
+              ...(twoFAChallenge?.ref ? { ref: twoFAChallenge.ref } : {})
+            })
           }).then((r) => r.json()).catch(() => null);
 
           const token = res?.token || res?.access_token || res?.centerResponse?.token || res?.centerResponse?.access_token;
@@ -387,7 +415,7 @@ export default function MainframeLandingLogin({ onLoginSuccess }: MainframeLandi
         setTwoFAError('เกิดข้อผิดพลาดในการตรวจสอบ 2FA: ' + (err?.message || 'Network error'));
       }
     },
-    [username, password, twoFAMode, twoFAOtp, twoFAToken, finalizeCenterLogin]
+    [username, password, twoFAMode, twoFAOtp, twoFAToken, twoFAChallenge, finalizeCenterLogin]
   );
 
   // Select profile handler — show confirmation modal instead of auto-redirect
