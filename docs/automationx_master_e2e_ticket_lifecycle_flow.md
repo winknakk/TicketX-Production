@@ -1,19 +1,14 @@
 # พิมพ์เขียว Master End-to-End Flow: AutomationX & TicketX Lifecycle (ฉบับสมบูรณ์ที่สุด)
 **ระบบ:** AutomationX / TicketX Service Management Platform  
-**อ้างอิงโค้ดฐานข้อมูลและสเตทแมชชีนจริง:** `TicketLifecycle.ts`, `TicketStateMachine.ts`, `search_project_docs`, `PlaneWebhookService.ts`  
-**ขอบเขต:** ครอบคลุมครบทุกเส้นทาง 100% ไม่มีจุดลอยหรือเส้นขาด:  
-1. **Intake & Multi-Path Triage:** FAQ, Information (ค้นหาคลังความรู้ `search_project_docs` + ส่งต่อเจ้าหน้าที่ `Human Takeover`), และ Bug / Defect  
-2. **Confirmation & Provisioning:** สรุปปัญหา ➔ ยืนยัน ➔ สร้างตั๋ว (`NEW` ➔ `IN_PROGRESS`)  
-3. **Dual-Track Monitoring & Status Engine:** การติดตามคู่ขนาน ทั้งฝั่ง Dev (สะกิดทุก 1 ชม.), ฝั่งลูกค้าติดตามเชิงรุก (Interim update), และฝั่งลูกค้ากดดูเอง (Inbound Check Status) ซึ่งเชื่อมโยงกับสถานะจริงในระบบ (`IN_PROGRESS`, `WAITING_CUSTOMER`, `WAITING_INTERNAL`)  
-4. **Resolution (Asymmetric Boundary):** Dev Done ใน Plane.so ➔ ซิงค์เป็น `RESOLVED` ➔ ส่งแจ้งเตือนลูกค้าตรวจรับ (UAT)  
-5. **Verification & Closure Decision:**  
-   - **ผ่าน (Pass):** `CUSTOMER_CONFIRMED` ➔ `CLOSED` ➔ ซิงค์ปิด Plane.so ➔ จบกระบวนการ  
-   - **ไม่ผ่าน (Fail - Bug เดิม):** `REOPENED` ➔ วนกลับไปที่ `IN_PROGRESS` ให้ Dev แก้ไขต่อใน Ticket เดิม  
-   - **ไม่ผ่าน (Fail - Bug ใหม่):** แยกเป็นเคสใหม่ ➔ วนกลับไปที่จุดเริ่มต้น `START` เพื่อเปิดตั๋วใหม่  
+**อ้างอิงข้อกำหนดเพิ่มเติมจากทีม AppSup:**  
+เมื่อ Dev แก้ไขปัญหาเสร็จ จะมีขั้นตอนการตรวจสอบ 2 ระดับใน Plane.so ก่อนส่งถึงลูกค้า:
+1. **`AppSup Test`:** ให้ทีม AppSup ตรวจสอบความถูกต้องภายในก่อน (หากไม่ผ่าน ตีกลับให้ Dev แก้ต่อทันที โดยลูกค้าไม่ต้องรับรู้)
+2. **`Customer Test`:** เมื่อ AppSup ตรวจผ่าน จะเปลี่ยนสถานะเป็น `Customer Test` ซึ่งระบบจะ **ทริกเกอร์ส่ง LINE Push แจ้งเตือนลูกค้าให้เข้าตรวจรับ (UAT)**  
+**วันที่ปรับปรุง:** 2026-09-07  
 
 ---
 
-## 1. ผังรวมระดับ Master E2E Flow (เชื่อมโยงสมบูรณ์ทุกสถานะ)
+## 1. ผังรวมระดับ Master E2E Flow (พร้อมขั้นตอน AppSup Test ➔ Customer Test)
 
 ```mermaid
 flowchart TD
@@ -72,14 +67,20 @@ flowchart TD
         StateInProgress -.-> WorkerScan
     end
 
-    %% STAGE 3: RESOLUTION & UAT
-    subgraph S3["ระยะที่ 3: แก้ไขเสร็จสิ้น & ตรวจรับ (Resolution & Verification UAT)"]
-        DevCheckInterval --> DevDeployDone["Dev แก้ไขโค้ด/ดาต้า ➔ เทสต์ผ่าน ➔ Deploy สำเร็จ ✓<br>ปรับสถานะใน Plane.so เป็น 'Done'"]
-        DevDeployDone --> PlaneWebhook["Plane Webhook / Reverse Poller ทำงาน<br>(Asymmetric Boundary: Done ➔ RESOLVED)"]
-        PlaneWebhook --> StateResolved["ตั๋วเข้าสู่สถานะ: RESOLVED<br>(งานเทคนิคเสร็จแล้ว รอลูกค้าตรวจรับ)"]
+    %% STAGE 3: RESOLUTION & 2-STEP VERIFICATION (APPSUP TEST -> CUSTOMER TEST)
+    subgraph S3["ระยะที่ 3: ตรวจสอบ 2 ระดับ (AppSup Test ➔ Customer Test)"]
+        DevCheckInterval --> DevDone["Dev แก้ไขเสร็จสิ้น ➔ อัปเดตใน Plane.so"]
+        DevDone --> StateAppSupTest["【สถานะที่ 1: AppSup Test】<br>(ส่งให้ทีม AppSup ทดสอบภายในก่อน)"]
         
-        StateResolved --> PushUAT["ส่งแจ้งเตือนลูกค้าทาง LINE:<br>'แก้ไขเรียบร้อยแล้ว กรุณาตรวจสอบความถูกต้อง'<br>พร้อม Quick Reply: [ผ่าน / ปิดเคส] [ไม่ผ่าน]"]
-        ReturnStatusReport -.->|"กรณีตั๋วอยู่สถานะ RESOLVED"| PushUAT
+        StateAppSupTest --> AppSupCheck{"AppSup ทดสอบภายใน<br>ผ่านหรือไม่?"}
+        AppSupCheck -- "ไม่ผ่าน (Fail)" --> DevRework["ตีกลับให้ Dev แก้ไขต่อทันที<br>(ลูกค้าไม่ถูกรบกวน)"]
+        DevRework --> StateInProgress
+        
+        AppSupCheck -- "ผ่าน (Pass)" --> StateCustomerTest["【สถานะที่ 2: Customer Test】<br>(ปรับสถานะใน Plane.so เป็น Customer Test)"]
+        
+        StateCustomerTest --> PlaneWebhook["Plane Webhook ซิงค์สถานะเข้า TicketX<br>(Mapping: Customer Test ➔ RESOLVED)"]
+        PlaneWebhook --> PushUAT["⚡ ระบบส่ง LINE Push Notification อัตโนมัติ:<br>'ระบบแก้ไขและตรวจสอบเบื้องต้นแล้ว<br>รบกวนคุณลูกค้าเข้าตรวจสอบและยืนยันค่ะ'<br>พร้อม Quick Reply: [ผ่าน / ปิดเคส] [ไม่ผ่าน]"]
+        ReturnStatusReport -.->|"กรณีตั๋วอยู่สถานะ Customer Test"| PushUAT
     end
 
     %% STAGE 4: VERIFICATION & CLOSURE
@@ -88,7 +89,7 @@ flowchart TD
         
         %% Path Pass
         CustVerify -- "1. ผ่าน (Pass)" --> StateConfirmed["ตั๋วเข้าสู่สถานะ: CUSTOMER_CONFIRMED"]
-        StateConfirmed --> StateClosed["ตั๋วเข้าสู่สถานะ: CLOSED (Terminal)<br>+ ซิงค์ปิด Issue ใน Plane.so<br>+ ส่งข้อความขอบคุณลูกค้า"]
+        StateConfirmed --> StateClosed["ตั๋วเข้าสู่สถานะ: CLOSED (Terminal)<br>+ ซิงค์ปิด Issue ใน Plane.so เป็น Done/Closed<br>+ ส่งข้อความขอบคุณลูกค้า"]
         StateClosed --> EndSuccess(["● END: ปิดเคสสมบูรณ์"])
         
         %% Path Fail
@@ -108,106 +109,74 @@ flowchart TD
 
 ---
 
-## 2. เจาะลึก Flow ปัญหาประเภท "Information" (พร้อมคลังเอกสาร & Human Takeover)
-
-ในระบบ AutomationX ปัญหาประเภท `Information` ไม่ใช่แค่ตอบข้อความเปล่าๆ แต่มี Sub-flow ที่สมบูรณ์ตามมาตรฐานระบบ:
-
-```mermaid
-flowchart TD
-    InboundInfo["ลูกค้าสอบถามข้อมูลทั่วไป / ขั้นตอน / ระเบียบ / คู่มือ"] --> CallTool["AgentX เรียก Tool: search_project_docs(query, project_id)"]
-    CallTool --> VectorSearch[("ค้นหา Semantic & Keyword ในคลังความรู้<br>PostgreSQL pgvector / Knowledge Base")]
-    
-    VectorSearch --> HasEvidence{"พบคู่มือหรือเอกสาร<br>ที่ตรงกับคำถามหรือไม่?"}
-    
-    %% กรณีพบ
-    HasEvidence -- "พบเอกสารตรงจุด" --> FormatAns["AI สรุปคำตอบ 1-2 ประเด็นหลักอย่างกระชับ<br>พร้อมแนบขั้นตอนและลิงก์เอกสารอ้างอิง"]
-    FormatAns --> AskMore["ลงท้าย: 'อยากรู้เรื่องไหนเพิ่มเติมก็ถามต่อได้เลยนะคะ'"]
-    AskMore --> DoneInfo(["จบเทิร์น (ไม่เปิดตั๋ว)"])
-    
-    %% กรณีไม่พบ
-    HasEvidence -- "ไม่พบเอกสาร (ANSWER_NOT_FOUND)" --> NoHallucinate["AI ไม่คาดเดาข้อมูลเอง (No Hallucination)<br>แจ้งลูกค้าอย่างสุภาพว่าไม่พบข้อมูลในคู่มือปัจจุบัน"]
-    NoHallucinate --> OfferOption{"ให้ตัวเลือกลูกค้าผ่าน Quick Reply"}
-    
-    OfferOption -- "1. ต้องการคุยกับเจ้าหน้าที่" --> DoTakeover["เรียก escalate_to_pm / Human Takeover<br>แจ้งเตือน Admin ในระบบ TicketX<br>เพื่อส่งต่อบทสนทนาให้คนเข้ามารับช่วง"]
-    OfferOption -- "2. ประสานงานเปิดตั๋วสอบถาม" --> RouteToTicket["ส่งต่อไปยังกระบวนการเปิด Ticket<br>(ประเภท: Inquiry / Request)"]
-    OfferOption -- "3. ไม่ต้องการอะไรเพิ่ม" --> ByeInfo["ขอบคุณลูกค้าและจบการสนทนา"]
-```
-
----
-
-## 3. วงจรชีวิตของสถานะตั๋ว (Ticket Lifecycle State Machine)
-
-ในโค้ด `system/backend/src/domain/ticket/TicketLifecycle.ts` และ `TicketStateMachine.ts` สถานะของตั๋วถูกควบคุมอย่างเข้มงวด ดังนี้:
-
-| สถานะใน TicketX (Customer Lifecycle) | ความหมายและบริบทการทำงาน | สถานะที่เชื่อมกับ Plane.so | ใครเป็นคนเปลี่ยนสถานะได้ (Actor) |
-| :--- | :--- | :--- | :--- |
-| `NEW` | ตั๋วถูกสร้างขึ้นในระบบ รอการจัดคิว | `Backlog` | System / Operator |
-| `TRIAGED` | ผ่านการคัดกรองและประเมินเบื้องต้นแล้ว | `Backlog` | Operator / System |
-| `IN_PROGRESS` | ทีม Dev กำลังดำเนินการตรวจสอบและแก้ไข | `Open` | Dev (Plane) / Operator |
-| `WAITING_CUSTOMER` | ทีมงานขอข้อมูลเพิ่มเติมจากลูกค้า (เช่น ขอรูป Log เพิ่ม) | `Open` | Operator / System |
-| `WAITING_INTERNAL` | รอการประสานงานภายในระหว่างทีม | `Open` | Operator / System |
-| **`RESOLVED`** | **Dev แก้ไขเสร็จ (Done ใน Plane) ➔ ส่งให้ลูกค้าตรวจรับ (UAT)** | **`Done`** | **Plane / System (ไม่ใช่ Closed!)** |
-| `CUSTOMER_CONFIRMED` | ลูกค้าตรวจสอบแล้วยืนยันว่า "ผ่าน" | `Done` | **Customer เท่านั้น** |
-| **`CLOSED`** | ตั๋วถูกปิดอย่างเป็นทางการ (Terminal State) | **`Done`** | **Customer / System** |
-| **`REOPENED`** | **ลูกค้าแจ้ง "ไม่ผ่าน" (Bug เดิม) ➔ วนกลับไปแก้ต่อ** | **`Open`** | **Customer / Operator** |
-| `CANCELLED` | ยกเลิกเคส (เช่น ลูกค้าแจ้งยกเลิกก่อนเริ่มงาน) | `Cancelled` | Customer / Operator |
-
-> [!IMPORTANT]
-> **หลักการ Asymmetric Boundary (ความปลอดภัยของสถานะ):**  
-> เมื่อทีม Dev แก้ไขงานเสร็จใน Plane.so และปรับสถานะเป็น `Done` ระบบจะเปลี่ยนสถานะใน TicketX เป็น **`RESOLVED` เท่านั้น (ห้ามเปลี่ยนเป็น `CLOSED` เด็ดขาด)**  
-> เพราะ *"การที่ Dev ทำเสร็จ ไม่ได้แปลว่าปัญหาได้รับการแก้ไขถูกต้องในมุมมองของลูกค้า"* ตั๋วจะปิดเป็น `CLOSED` ได้ก็ต่อเมื่อ **ลูกค้าเป็นผู้ยืนยันตรวจรับด้วยตนเอง** เท่านั้น!
-
----
-
-## 4. รายละเอียดจุดเชื่อมโยงของการตรวจสอบสถานะ (Track A ที่ไม่ขาดตอน)
-
-จากข้อสังเกตเรื่องสถานะที่หายไป เมื่อลูกค้ากดดูสถานะในแชต:
-1. **เมื่อลูกค้าพิมพ์ `"ตรวจสอบสถานะ"` ➔ กด `"ดูเคสล่าสุดทั้งหมด"`:**
-   - ระบบจะ Query รายการตั๋วที่ยังไม่ปิด (`status NOT IN ('CLOSED', 'CANCELLED')`)
-2. **เมื่อเลือกรหัสตั๋ว เช่น `TCK-2026-46939`:**
-   - ระบบอ่านค่าจาก `TicketStateMachine`
-   - **ถ้าสถานะคือ `IN_PROGRESS`:** บอทจะรายงานความคืบหน้า + เวลา SLA เป้าหมาย + แจ้งว่าทีมงานกำลังเร่งดำเนินการ
-   - **ถ้าสถานะคือ `WAITING_CUSTOMER`:** บอทจะขึ้นข้อความเตือนว่า *"ทีมงานกำลังรอข้อมูล [เรื่องที่ขอ] เพิ่มเติมจากคุณลูกค้าอยู่นะคะ"*
-   - **ถ้าสถานะคือ `RESOLVED` (งานเสร็จแล้วรอลูกค้าตรวจ):** บอทจะไม่ใช่แค่บอกสถานะ แต่จะ **แนบปุ่มยืนยันผลตรวจรับ UAT ทันที**:
-     - ปุ่ม **[ ตรวจสอบแล้ว ถูกต้อง (ปิดเคส) ]**
-     - ปุ่ม **[ ยังพบปัญหา (ไม่ผ่าน) ]**
-   - **ทำให้เส้นทางของลูกค้า (Track A) เชื่อมโยงกลับเข้าสู่กระบวนการปิดเคส (Stage 4) ได้ทันทีโดยไม่มีจุดตัน!**
-
----
-
-## 5. การจัดการตอนปิดเคสแบบละเอียด: "ผ่าน" vs "ไม่ผ่าน (Bug เดิม vs Bug ใหม่)"
+## 2. ลำดับขั้นตอนการทำงานในช่วง AppSup Test ➔ Customer Test
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Customer as ลูกค้า (LINE OA)
+    actor Dev as ทีมพัฒนา (Dev)
+    actor AppSup as ทีม AppSup (Support/QA)
+    participant Plane as Plane.so (Work Board)
     participant Core as AutomationX Backend
-    participant SM as Ticket State Machine
-    participant Plane as Plane.so (Dev)
+    actor Customer as ลูกค้า (LINE OA)
 
-    Note over Customer, Plane: ขั้นตอนส่งมอบงานและการตรวจรับ (UAT)
-    Plane->>Core: Dev ปรับสถานะเป็น Done
-    Core->>SM: transition(to: 'RESOLVED', actor: 'plane')
-    SM-->>Core: Status = RESOLVED
-    Core-->>Customer: Push แจ้งเตือน: "ระบบแก้ไขเรียบร้อยแล้วค่ะ รบกวนตรวจสอบนะคะ"<br>พร้อมตัวเลือก: [ ผ่าน / ปิดเคส ] [ ไม่ผ่าน ]
-
-    alt 1. ลูกค้าตรวจแล้ว "ผ่าน" (Pass)
-        Customer->>Core: แตะปุ่ม "ผ่าน / ปิดเคส"
-        Core->>SM: transition(to: 'CUSTOMER_CONFIRMED', actor: 'customer')
-        Core->>SM: transition(to: 'CLOSED', actor: 'system')
-        Core->>Plane: Sync Closure to Plane (Close Work Item)
-        Core-->>Customer: "ปิดเคสเรียบร้อยค่ะ ขอบคุณที่ใช้บริการนะคะ 🙏"
-    else 2. ลูกค้าตรวจแล้ว "ไม่ผ่าน" — เป็น Bug เดิม
-        Customer->>Core: แตะปุ่ม "ไม่ผ่าน" + ระบุ: "ชื่อเจ้าหน้าที่ยังเป็น NULL เหมือนเดิม"
-        Core->>SM: transition(to: 'REOPENED', actor: 'customer', reason: 'Same Bug persists')
-        Core->>Plane: Reopen Issue ➔ State: Open + Post Comment อาการที่ลูกค้าแจ้ง
-        Core->>Core: แจ้งเตือนด่วนเข้ากลุ่ม Dev ทันที
-        Core-->>Customer: "รับทราบค่ะ ทีมงานขออภัยด้วยนะคะ กำลังเร่งตรวจสอบในเคสเดิม (TCK-2026-46939) ให้อีกครั้งทันทีค่ะ"
-    else 3. ลูกค้าตรวจแล้ว "ไม่ผ่าน" — เป็น Bug ใหม่
-        Customer->>Core: แตะปุ่ม "ไม่ผ่าน" + ระบุ: "ชื่อขึ้นแล้ว แต่ยอดสุทธิคำนวณผิด"
-        Core->>Core: วิเคราะห์พบเป็นอาการใหม่นอกเหนือสโคปเดิม
-        Core->>SM: transition(to: 'CUSTOMER_CONFIRMED', actor: 'system') ➔ ปิดตั๋วเดิม
-        Core-->>Customer: "สำหรับปัญหายอดสุทธิคำนวณผิด เป็นข้อผิดพลาดคนละส่วนกัน ขออนุญาตเปิดเป็นเคสใหม่เพื่อติดตามให้นะคะ"
-        Core->>Core: ส่งเรื่องวนกลับไปที่ START ➔ สร้าง Ticket รหัสใหม่ (TCK ตัวใหม่)
+    Note over Dev, AppSup: 1. ขั้นตอน AppSup Test (ตรวจสอบภายใน)
+    Dev->>Plane: แก้ไขปัญหาเสร็จ ➔ ปรับสถานะเป็น "AppSup Test"
+    Plane-->>AppSup: แจ้งเตือน AppSup ให้เข้าทดสอบในสภาพแวดล้อม Staging/UAT
+    
+    alt กรณี AppSup ทดสอบแล้ว "ไม่ผ่าน" (Internal Reject)
+        AppSup->>Plane: ปรับสถานะกลับเป็น "In Progress" + แนบ Log ที่พบบั๊ก
+        Plane-->>Dev: แจ้งเตือน Dev ให้กลับไปแก้ไขต่อ (ลูกค้ายังไม่โดนกวนใจ)
+    else กรณี AppSup ทดสอบแล้ว "ผ่าน" (Internal Approved)
+        AppSup->>Plane: ปรับสถานะใน Plane.so เป็น "Customer Test"
+        
+        Note over Plane, Customer: 2. ขั้นตอน Customer Test (ส่งมอบให้ลูกค้าตรวจรับ)
+        Plane->>Core: Webhook Event: Status changed to "Customer Test"
+        Core->>Core: อัปเดตสถานะใน TicketX เป็น "RESOLVED" (รอผลตรวจรับ)
+        Core->>Customer: ⚡ ส่ง LINE Push Notification อัตโนมัติ:<br>"เรียน คุณลูกค้า เคส TCK-2026-46939 ได้รับการแก้ไขและทดสอบเบื้องต้นเรียบร้อยแล้วค่ะ รบกวนเข้าตรวจสอบความถูกต้องของข้อมูลนะคะ" [ผ่าน / ปิดเคส] [ไม่ผ่าน]
+        
+        alt ลูกค้าตรวจรับแล้ว "ผ่าน" (Customer Confirmed)
+            Customer->>Core: แตะปุ่ม "ผ่าน / ปิดเคส"
+            Core->>Plane: Sync ปิดเคส ➔ ปรับสถานะเป็น "Done / Closed"
+            Core-->>Customer: "ปิดเคสเรียบร้อยค่ะ ขอบคุณที่ใช้บริการนะคะ 🙏"
+        else ลูกค้าตรวจรับแล้ว "ไม่ผ่าน" (Customer Failed)
+            Customer->>Core: แตะปุ่ม "ไม่ผ่าน" + แจ้งอาการ
+            Core->>Plane: Reopen Work Item ➔ สถานะ "In Progress" พร้อมส่ง Comment ลูกค้าให้ทีม
+        end
     end
+```
+
+---
+
+## 3. ตารางสถานะที่เชื่อมโยงระหว่าง Plane.so และ TicketX
+
+| ขั้นตอนการทำงาน | สถานะใน Plane.so | สถานะใน TicketX | การกระทำของระบบ (System Action) |
+| :--- | :--- | :--- | :--- |
+| รับเรื่อง / เปิดเคส | `Backlog` / `Todo` | `NEW` / `TRIAGED` | สร้างตั๋วงาน แจ้งเลขเคสและ SLA แก่ลูกค้า |
+| Dev กำลังแก้ปัญหา | `In Progress` | `IN_PROGRESS` | ระบบวนลูปสะกิด Dev ทุก 1 ชม. / ส่ง Interim Update ลูกค้า |
+| Dev ทำเสร็จ ส่งตรวจภายใน | **`AppSup Test`** | `WAITING_INTERNAL` | **AppSup ทำการทดสอบระบบภายใน (ยังไม่แจ้งลูกค้า)** |
+| AppSup เทสไม่ผ่าน | `In Progress` | `IN_PROGRESS` | ตีกลับให้ Dev แก้ต่อทันที โดยลูกค้าไม่เสียเวลา |
+| AppSup เทสผ่าน | **`Customer Test`** | **`RESOLVED`** | **ระบบยิง LINE Push เตือนลูกค้าให้ตรวจรับทันที!** |
+| ลูกค้ายืนยันว่า "ผ่าน" | `Done` / `Closed` | `CUSTOMER_CONFIRMED` ➔ `CLOSED` | ปิดเคสสมบูรณ์ บันทึกประวัติและส่งข้อความขอบคุณ |
+| ลูกค้าแจ้ง "ไม่ผ่าน" (Bug เดิม) | `In Progress` / `Reopened` | `REOPENED` ➔ `IN_PROGRESS` | นำข้อมูลลูกค้าส่งต่อให้ Dev แก้ไขต่อในตั๋วเดิม |
+| ลูกค้าแจ้ง "ไม่ผ่าน" (Bug ใหม่) | `Done` (ตั๋วเดิม) / เปิดใหม่ | `CLOSED` (เดิม) / `NEW` (ใหม่) | ปิดตั๋วเดิม และเปิดตั๋วใหม่สำหรับอาการใหม่ |
+
+---
+
+## 4. ตัวอย่างข้อความแจ้งเตือนเมื่อเข้าสู่สถานะ `Customer Test`
+
+เมื่อทีม AppSup เปลี่ยนสถานะใน Plane.so เป็น `Customer Test` บอทจะยิงข้อความเข้า LINE ลูกค้าทันที:
+
+```text
+เรียน คุณลูกค้า (แจ้งผลการแก้ไขเพื่อตรวจสอบ: TCK-2026-46939) 📌
+
+ขณะนี้ทีมงานได้ดำเนินการแก้ไขปัญหาข้อมูลใบรับรองการจ่ายเงินเดือน (SLIP) และผ่านการตรวจสอบความถูกต้องเบื้องต้นจากทีมสนับสนุนระบบ (AppSup) เรียบร้อยแล้วค่ะ
+
+🔹 รายละเอียดเคส: TCK-2026-46939
+🔹 สถานะปัจจุบัน: Customer Test (พร้อมให้คุณลูกค้าเข้าตรวจรับ)
+
+รบกวนคุณลูกค้าเข้าตรวจสอบความถูกต้องของข้อมูลในระบบได้ตามปกติค่ะ เมื่อตรวจสอบเรียบร้อยแล้ว สามารถกดปุ่มด้านล่างเพื่อยืนยันได้เลยนะคะ:
+[ ตรวจสอบแล้ว ถูกต้อง (ปิดเคส) ]   [ ยังพบปัญหา (ไม่ผ่าน) ]
+
+หากมีข้อติดขัดประการใด สามารถแจ้งทีมงานกลับมาได้ทันทีนะคะ ขอบคุณค่ะ 🙏
 ```

@@ -1,20 +1,13 @@
 # Master End-to-End Ticket Lifecycle Blueprint: AutomationX & TicketX (100% Complete Edition)
 **System:** AutomationX / TicketX Service Management Platform  
-**Codebase Sources of Truth:** `TicketLifecycle.ts`, `TicketStateMachine.ts`, `search_project_docs`, `PlaneWebhookService.ts`  
-**Scope:** 100% Complete & Unbroken End-to-End Flow:  
-1. **Intake & Multi-Path Triage:** FAQ, Information (via `search_project_docs` & `Human Takeover`), Bug / Defect  
-2. **Confirmation & Provisioning:** Summarize ➔ Confirmation Gating ➔ Ticket Creation (`NEW` ➔ `IN_PROGRESS`)  
-3. **Execution & Real-Time Status Engine:** Hourly Dev Reminders, Customer Proactive Push, and Customer Self-Service Inquiry seamlessly connected to live lifecycle states (`IN_PROGRESS`, `WAITING_CUSTOMER`, `WAITING_INTERNAL`)  
-4. **Resolution (Asymmetric Boundary):** Plane `Done` ➔ `RESOLVED` ➔ Automatic UAT Prompt to Customer  
-5. **Verification & Closure Decision:**  
-   - **Pass:** `CUSTOMER_CONFIRMED` ➔ `CLOSED` (Terminal) ➔ Sync Done to Plane.so  
-   - **Fail (Same Bug):** `REOPENED` ➔ Reuse Original Ticket ➔ Back to `IN_PROGRESS`  
-   - **Fail (New Bug):** Isolate / Close original ➔ Route to `START` for New Ticket Creation  
+**Specification Update:** Incorporating 2-Step Staging Verification defined by Application Support (AppSup):  
+1. **`AppSup Test`:** Internal verification by Application Support / QA team before customer handoff (if failed, returned to Dev without disturbing the customer).  
+2. **`Customer Test`:** Once AppSup approves, the status transitions to `Customer Test`, which **triggers an automated LINE Push Notification prompting the customer to perform UAT**.  
 **Date:** September 7, 2026  
 
 ---
 
-## 1. Master E2E Lifecycle Flowchart (100% Connected)
+## 1. Master E2E Lifecycle Flowchart (With AppSup Test & Customer Test)
 
 ```mermaid
 flowchart TD
@@ -73,14 +66,20 @@ flowchart TD
         StateInProgress -.-> WorkerScan
     end
 
-    %% STAGE 3: RESOLUTION & UAT
-    subgraph S3["Stage 3: Resolution & Verification (UAT)"]
-        DevCheckInterval --> DevDeployDone["Dev completes fix ➔ Tests pass ➔ Deploy Successful ✓<br>Sets Work Item state in Plane.so to 'Done'"]
-        DevDeployDone --> PlaneWebhook["Plane Webhook / Reverse Poller triggered<br>(Asymmetric Boundary: Done ➔ RESOLVED)"]
-        PlaneWebhook --> StateResolved["Ticket State: RESOLVED<br>(Technical work done, awaiting user UAT)"]
+    %% STAGE 3: RESOLUTION & 2-STEP VERIFICATION (APPSUP TEST -> CUSTOMER TEST)
+    subgraph S3["Stage 3: 2-Step Verification (AppSup Test ➔ Customer Test)"]
+        DevCheckInterval --> DevDone["Dev completes fix ➔ Updates Plane.so status"]
+        DevDone --> StateAppSupTest["【State 1: AppSup Test】<br>(Application Support validates internally)"]
         
-        StateResolved --> PushUAT["Send LINE Push to Customer:<br>'Issue resolved, please verify your data'<br>Quick Reply: [ Pass / Close ] [ Fail ]"]
-        ReturnStatusReport -.->|"If status is RESOLVED"| PushUAT
+        StateAppSupTest --> AppSupCheck{"AppSup Internal Test<br>Passed or Failed?"}
+        AppSupCheck -- "Failed (Reject)" --> DevRework["Return to Dev for rework<br>(Customer is not disturbed)"]
+        DevRework --> StateInProgress
+        
+        AppSupCheck -- "Passed (Approved)" --> StateCustomerTest["【State 2: Customer Test】<br>(Set status to 'Customer Test' in Plane.so)"]
+        
+        StateCustomerTest --> PlaneWebhook["Plane Webhook syncs to TicketX<br>(Mapping: Customer Test ➔ RESOLVED)"]
+        PlaneWebhook --> PushUAT["⚡ Automated LINE Push Notification:<br>'Issue resolved & verified by AppSup.<br>Please verify and confirm your records.'<br>Quick Reply: [ Pass / Close ] [ Fail ]"]
+        ReturnStatusReport -.->|"If status is Customer Test"| PushUAT
     end
 
     %% STAGE 4: VERIFICATION & CLOSURE
@@ -89,7 +88,7 @@ flowchart TD
         
         %% Pass Path
         CustVerify -- "1. Pass (Confirmed)" --> StateConfirmed["Ticket State: CUSTOMER_CONFIRMED"]
-        StateConfirmed --> StateClosed["Ticket State: CLOSED (Terminal)<br>+ Sync Closed state to Plane.so<br>+ Deliver Closing Thank-You"]
+        StateConfirmed --> StateClosed["Ticket State: CLOSED (Terminal)<br>+ Sync Closed state to Plane.so as Done/Closed<br>+ Deliver Closing Thank-You"]
         StateClosed --> EndSuccess(["● END: Process Complete"])
         
         %% Fail Path
@@ -109,62 +108,54 @@ flowchart TD
 
 ---
 
-## 2. Dedicated "Information" Flow (Knowledge Retrieval & Escalation)
+## 2. Sequence Diagram: AppSup Test to Customer Test Transition
 
 ```mermaid
-flowchart TD
-    InboundInfo["Customer asks general usage, guideline, policy, or manual"] --> CallTool["AgentX invokes search_project_docs(query, project_id)"]
-    CallTool --> VectorSearch[("Semantic & Keyword Vector Search<br>PostgreSQL pgvector / Knowledge Base")]
+sequenceDiagram
+    autonumber
+    actor Dev as Developer
+    actor AppSup as AppSup Team (Support/QA)
+    participant Plane as Plane.so (Work Item Board)
+    participant Core as AutomationX Backend
+    actor Customer as Customer (LINE OA)
+
+    Note over Dev, AppSup: 1. Internal AppSup Testing Stage
+    Dev->>Plane: Fix deployed to Staging ➔ Sets status to "AppSup Test"
+    Plane-->>AppSup: Notifies AppSup to verify on Staging
     
-    VectorSearch --> HasEvidence{"Relevant Evidence<br>Found in Knowledge Base?"}
-    
-    %% Found
-    HasEvidence -- "Evidence Found" --> FormatAns["AI synthesizes 1-2 core direct points<br>+ Attaches link/manual reference"]
-    FormatAns --> AskMore["Closes with: 'Let me know if you need any further details!'"]
-    AskMore --> DoneInfo(["Turn Complete (No Ticket Created)"])
-    
-    %% Not Found
-    HasEvidence -- "Not Found (ANSWER_NOT_FOUND)" --> NoHallucinate["AI admits limitation politely (Zero Hallucination)<br>Explains documentation lacks this topic"]
-    NoHallucinate --> OfferOption{"Provides Quick Reply Options"}
-    
-    OfferOption -- "1. Talk to Human Agent" --> DoTakeover["Call escalate_to_pm / Human Takeover<br>Notify Admin Console in TicketX<br>for smooth human takeover"]
-    OfferOption -- "2. Open Inquiry Ticket" --> RouteToTicket["Route to Ticket Creation Flow<br>(Type: Inquiry / Service Request)"]
-    OfferOption -- "3. Done" --> ByeInfo["Polite farewell and close turn"]
+    alt AppSup Internal Test Fails
+        AppSup->>Plane: Reverts status to "In Progress" + Attaches bug log
+        Plane-->>Dev: Alerts Dev to continue fixing (Customer is NOT disturbed)
+    else AppSup Internal Test Passes
+        AppSup->>Plane: Advances status in Plane.so to "Customer Test"
+        
+        Note over Plane, Customer: 2. Customer UAT Notification Stage
+        Plane->>Core: Webhook Event: Status changed to "Customer Test"
+        Core->>Core: Updates TicketX state to "RESOLVED" (Awaiting Customer UAT)
+        Core->>Customer: ⚡ Triggers Automated LINE Push Notification:<br>"Dear Customer, case TCK-2026-46939 has been resolved and verified by our support team. Please review and confirm." [ Pass / Close ] [ Fail ]
+        
+        alt Customer Confirms (Pass)
+            Customer->>Core: Taps "Pass / Close"
+            Core->>Plane: Closes Work Item ➔ Status: "Done / Closed"
+            Core-->>Customer: "Case closed successfully. Thank you for your cooperation! 🙏"
+        else Customer Reports Issue (Fail)
+            Customer->>Core: Taps "Fail" + describes symptom
+            Core->>Plane: Reopens Work Item ➔ Status: "In Progress" with user feedback
+        end
+    end
 ```
 
 ---
 
-## 3. Ticket Lifecycle State Machine Architecture
+## 3. Plane.so to TicketX State Mapping Table
 
-From `TicketLifecycle.ts` and `TicketStateMachine.ts`:
-
-| State in TicketX | Description & Role | Mapped State in Plane.so | Permitted Transition Actor |
+| Operational Stage | Plane.so State | TicketX Lifecycle State | System Action & Customer Impact |
 | :--- | :--- | :--- | :--- |
-| `NEW` | Fresh ticket created in database | `Backlog` | System / Operator |
-| `TRIAGED` | Assessed and categorized | `Backlog` | Operator / System |
-| `IN_PROGRESS` | Engineering actively investigating and resolving | `Open` | Dev (Plane) / Operator |
-| `WAITING_CUSTOMER` | Waiting for additional info/screenshots from user | `Open` | Operator / System |
-| `WAITING_INTERNAL` | Waiting for cross-team or vendor dependency | `Open` | Operator / System |
-| **`RESOLVED`** | **Engineering Done in Plane.so ➔ Waiting for Customer UAT** | **`Done`** | **Plane / System (Never auto-closed!)** |
-| `CUSTOMER_CONFIRMED` | Customer verifies and confirms fix | `Done` | **Customer Only** |
-| **`CLOSED`** | Ticket permanently closed (Terminal State) | **`Done`** | **Customer / System** |
-| **`REOPENED`** | **Customer reports Fail (Same Bug) ➔ Reopens ticket** | **`Open`** | **Customer / Operator** |
-| `CANCELLED` | Ticket cancelled by customer or operator | `Cancelled` | Customer / Operator |
-
-> [!IMPORTANT]
-> **The Asymmetric Boundary Principle:**  
-> When engineering marks an issue `Done` in Plane.so, TicketX transitions the ticket to **`RESOLVED`**, NEVER directly to `CLOSED`.  
-> Engineering completing work does not mean the customer agrees the problem is solved. Only the customer can transition the ticket past `RESOLVED` into `CUSTOMER_CONFIRMED` ➔ `CLOSED` or `REOPENED`.
-
----
-
-## 4. Unbroken Status Inquiry Track (Track A)
-
-1. **Customer Inquires Status:** Customer taps *"Check Status"* ➔ *"View all recent cases"* (`LIST`).
-2. **Selecting Ticket:** The system queries `TicketStateMachine`:
-   - If `IN_PROGRESS`: Reports current stage and hours left to SLA.
-   - If `WAITING_CUSTOMER`: Informs the user what information the team is waiting for.
-   - **If `RESOLVED`:** Directly presents UAT decision chips:
-     - **[ Verified & Correct (Close Case) ]**
-     - **[ Still Broken (Fail) ]**
-   - **This directly connects Track A into Stage 4 (Verification & Closure) without any broken or dead-end paths.**
+| Intake & Creation | `Backlog` / `Todo` | `NEW` / `TRIAGED` | Generates TCK ID and SLA commitment to user. |
+| In Development | `In Progress` | `IN_PROGRESS` | Hourly dev alerts; customer interim updates. |
+| Dev Completed | **`AppSup Test`** | `WAITING_INTERNAL` | **AppSup tests internally. Customer is NOT alerted yet.** |
+| AppSup Rejected | `In Progress` | `IN_PROGRESS` | Returned to Dev internally. |
+| AppSup Approved | **`Customer Test`** | **`RESOLVED`** | **Automated LINE Push sent prompting customer for UAT.** |
+| Customer Confirmed | `Done` / `Closed` | `CUSTOMER_CONFIRMED` ➔ `CLOSED` | Closes case cleanly; sends thank-you message. |
+| Customer Failed (Same Bug) | `In Progress` / `Reopened` | `REOPENED` ➔ `IN_PROGRESS` | Resumes work on original ticket; urgent alert to team. |
+| Customer Failed (New Bug) | `Done` (Original) / New Ticket | `CLOSED` (Original) / `NEW` (New) | Closes original ticket; routes new issue to Intake. |
