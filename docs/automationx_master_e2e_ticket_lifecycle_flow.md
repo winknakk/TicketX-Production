@@ -1,195 +1,213 @@
-# พิมพ์เขียว Master End-to-End Flow: AutomationX & TicketX Lifecycle
+# พิมพ์เขียว Master End-to-End Flow: AutomationX & TicketX Lifecycle (ฉบับสมบูรณ์ที่สุด)
 **ระบบ:** AutomationX / TicketX Service Management Platform  
-**ขอบเขต:** ตั้งแต่ลูกค้าส่งข้อความแรก (Intake) ➔ คัดกรอง/เปิดเคส ➔ การติดตามสถานะ 2 รูปแบบ (Self-service & Proactive) ➔ แก้ไข & ทดสอบ ➔ ปิดเคส (Case Closure)  
-**วันที่บันทึก:** 2026-09-04  
+**อ้างอิงโค้ดฐานข้อมูลและสเตทแมชชีนจริง:** `TicketLifecycle.ts`, `TicketStateMachine.ts`, `search_project_docs`, `PlaneWebhookService.ts`  
+**ขอบเขต:** ครอบคลุมครบทุกเส้นทาง 100% ไม่มีจุดลอยหรือเส้นขาด:  
+1. **Intake & Multi-Path Triage:** FAQ, Information (ค้นหาคลังความรู้ `search_project_docs` + ส่งต่อเจ้าหน้าที่ `Human Takeover`), และ Bug / Defect  
+2. **Confirmation & Provisioning:** สรุปปัญหา ➔ ยืนยัน ➔ สร้างตั๋ว (`NEW` ➔ `IN_PROGRESS`)  
+3. **Dual-Track Monitoring & Status Engine:** การติดตามคู่ขนาน ทั้งฝั่ง Dev (สะกิดทุก 1 ชม.), ฝั่งลูกค้าติดตามเชิงรุก (Interim update), และฝั่งลูกค้ากดดูเอง (Inbound Check Status) ซึ่งเชื่อมโยงกับสถานะจริงในระบบ (`IN_PROGRESS`, `WAITING_CUSTOMER`, `WAITING_INTERNAL`)  
+4. **Resolution (Asymmetric Boundary):** Dev Done ใน Plane.so ➔ ซิงค์เป็น `RESOLVED` ➔ ส่งแจ้งเตือนลูกค้าตรวจรับ (UAT)  
+5. **Verification & Closure Decision:**  
+   - **ผ่าน (Pass):** `CUSTOMER_CONFIRMED` ➔ `CLOSED` ➔ ซิงค์ปิด Plane.so ➔ จบกระบวนการ  
+   - **ไม่ผ่าน (Fail - Bug เดิม):** `REOPENED` ➔ วนกลับไปที่ `IN_PROGRESS` ให้ Dev แก้ไขต่อใน Ticket เดิม  
+   - **ไม่ผ่าน (Fail - Bug ใหม่):** แยกเป็นเคสใหม่ ➔ วนกลับไปที่จุดเริ่มต้น `START` เพื่อเปิดตั๋วใหม่  
 
 ---
 
-## 1. ผังรวมภาพใหญ่ตลอดวงจรชีวิตของตั๋วงาน (Master E2E Lifecycle)
+## 1. ผังรวมระดับ Master E2E Flow (เชื่อมโยงสมบูรณ์ทุกสถานะ)
 
 ```mermaid
 flowchart TD
     %% STAGE 1: INTAKE & TRIAGE
-    subgraph S1["ระยะที่ 1: รับเรื่อง & คัดกรอง (Intake & Triage)"]
-        A1["ลูกค้าพิมพ์ข้อความผ่าน LINE OA"] --> A2["Channel Gateway: Debounce (15s)"]
-        A2 --> A3{"Main AI Core & AgentX:<br>ข้อความทั่วไป หรือ แจ้งปัญหา?"}
-        A3 -- "คำถามทั่วไป / ตอบได้ทันที" --> A4["บอทตอบคำถามทันที (Fast Path)<br>จบการสนทนา ไม่เปิด Ticket"]
-        A3 -- "ปัญหาที่ต้องแก้ไข / ซัพพอร์ต" --> A5["บอทสรุปเรื่อง & ส่ง Quick Reply<br>[ยืนยัน] / [ยกเลิก]"]
-        A5 --> A6{"ลูกค้ายืนยัน?"}
-        A6 -- "ยกเลิก / ขอแก้ข้อมูล" --> A7["ยกเลิกหรือรอรายละเอียดเพิ่ม"]
-        A6 -- "ยืนยัน" --> A8["สร้าง Ticket (TCK-XXXXX)<br>+ Push Work Item ไปยัง Plane.so<br>+ แจ้ง SLA เป้าหมาย (เช่น 4 ชม.)"]
-    end
-
-    %% STAGE 2: DUAL-TRACK MONITORING
-    subgraph S2["ระยะที่ 2: ระหว่างดำเนินการ & ติดตาม 2 รูปแบบ (Execution & Dual-Track Monitoring)"]
-        A8 --> B_Pool[("ตั๋วอยู่ในสถานะ IN_PROGRESS<br>บน PostgreSQL & Plane.so")]
+    subgraph S1["ระยะที่ 1: รับเรื่องและจำแนกประเภท (Intake & Triage)"]
+        Start(["● START: ลูกค้าทักแชต LINE OA"]) --> Ingest["Channel Gateway: Debounce (15s)"]
+        Ingest --> Triage{"AI วิเคราะห์จำแนกประเภทคำขอ"}
         
-        %% Track A
-        B_Pool -.-> TA1["【แบบที่ 1: ลูกค้าติดตามเอง】<br>ลูกค้าพิมพ์ 'ตรวจสอบสถานะ'"]
-        TA1 --> TA2["กด Quick Reply 'ดูเคสล่าสุดทั้งหมด' (LIST)"]
-        TA2 --> TA3["เลือกเลขเคส (เช่น TCK-2026-94619)"]
-        TA3 --> TA4["บอทดึงสถานะ Real-time + แจ้งเป้าหมายเวลา SLA"]
+        %% Path 1: FAQ
+        Triage -- "1. FAQ (คำถามพบบ่อย)" --> FastFAQ["บอทตอบคำถามทันที (Fast Path)<br>อิงจากความรู้พื้นฐาน"]
+        FastFAQ --> EndFAQ(["● END: จบการสนทนา (ไม่เปิดตั๋ว)"])
         
-        %% Track B
-        B_Pool -.-> TB1["【แบบที่ 2: ระบบ/ทีมติดตามเชิงรุก (เพิ่มความถี่)】<br>SLA Monitoring Worker ตรวจสอบตั๋ว Urgent ทุก 15 นาที"]
-        TB1 --> TB2["สะกิด Dev ทุก 1 ชม.<br>(1h: Root Cause / 2h: Code / 3h: Deploy)"]
-        TB2 --> TB3{"มีความคืบหน้า<br>หรือติด Blocker?"}
-        TB3 -- "ติดปัญหา/ส่อแววช้า" --> TB4["Escalate ถึง Lead & แจ้งขอขยายเวลากับลูกค้าล่วงหน้า 30 นาที"]
-        TB3 -- "คืบหน้าตามแผน" --> TB5["ส่ง Interim Update ให้ลูกค้าทาง LINE ทุก 1.5 - 2 ชม."]
+        %% Path 2: Information
+        Triage -- "2. Information (ขอข้อมูล/คู่มือ)" --> CallDocs["เรียกใช้ Tool: search_project_docs<br>ค้นหาในคลังเอกสารของโปรเจกต์"]
+        CallDocs --> CheckDocsFound{"พบข้อมูลในเอกสารหรือไม่?"}
+        CheckDocsFound -- "พบข้อมูล" --> AnsInfo["สรุปคำตอบ 1-2 ประเด็นตรงจุด<br>พร้อมแนบลิงก์คู่มือให้ลูกค้า"]
+        AnsInfo --> EndInfo(["● END: จบการสนทนา (ไม่เปิดตั๋ว)"])
+        CheckDocsFound -- "ไม่พบข้อมูล (ANSWER_NOT_FOUND)" --> InfoEscalate{"ลูกค้าต้องการสอบถาม<br>เจ้าหน้าที่เพิ่มเติมหรือไม่?"}
+        InfoEscalate -- "ไม่ต้องการ" --> EndInfoNo
+        InfoEscalate -- "ต้องการ" --> HumanTakeover["เรียก Tool: escalate_to_pm / Human Takeover<br>ส่งต่อห้องแชตให้เจ้าหน้าที่ดูแลต่อ"]
+        HumanTakeover --> EndHuman(["● เจ้าหน้าที่รับช่วงต่อ"])
+        
+        %% Path 3: Bug / Defect
+        Triage -- "3. Bug / Defect (ระบบมีปัญหา)" --> GenSummary["AI สรุปปัญหา (Subsystem, Symptom, Priority)<br>ส่งปุ่ม Quick Reply: [ยืนยัน] [แก้ไข/ยกเลิก]"]
+        GenSummary --> CustConfirm{"ลูกค้ายืนยันความถูกต้อง?"}
+        CustConfirm -- "ไม่ยืนยัน / ขอแก้ข้อมูล" --> ReqMore["ขอข้อมูลเพิ่มเติม / ปรับปรุงรายละเอียด"]
+        ReqMore --> GenSummary
+        CustConfirm -- "ยืนยัน (Confirm)" --> ProvisionTicket["สร้าง Ticket ใน PostgreSQL (สถานะ: NEW)<br>+ Push Work Item เข้า Plane.so<br>+ คำนวณเวลา SLA (เช่น 4 ชม.)"]
     end
 
-    %% STAGE 3: RESOLUTION & VERIFICATION
-    subgraph S3["ระยะที่ 3: แก้ไขเสร็จสิ้น & ตรวจสอบ (Resolution)"]
-        TB2 --> C1["Dev แก้ไขสำเร็จ & ปรับสถานะเป็น Done ใน Plane.so"]
-        C1 --> C2["Plane Webhook / Reverse Poller<br>Sync สถานะกลับมายัง TicketX DB"]
-        C2 --> C3["TicketX Push Notification แจ้งลูกค้าทาง LINE<br>'แก้ไขเรียบร้อยแล้ว กรุณาเข้าตรวจสอบ'"]
+    %% STAGE 2: EXECUTION & STATUS ENGINE
+    subgraph S2["ระยะที่ 2: ดำเนินการ & ระบบติดตามคู่ขนาน (Execution & Monitoring Engine)"]
+        ProvisionTicket --> StateInProgress["ตั๋วเข้าสู่สถานะ: IN_PROGRESS<br>(Dev รับเรื่องและเริ่มวิเคราะห์)"]
+        
+        %% รอข้อมูลจากลูกค้า
+        StateInProgress <-->|"Dev ขอข้อมูลเพิ่ม / ลูกค้าส่งข้อมูล"| StateWaitCust["สถานะ: WAITING_CUSTOMER<br>(รอข้อมูลเพิ่มเติมจากลูกค้า)"]
+        
+        %% Monitoring Track A: Customer Inbound Check
+        subgraph TrackA["【Track A: ลูกค้ากดตรวจสอบสถานะเอง】"]
+            CustCheck["ลูกค้าพิมพ์ 'ตรวจสอบสถานะ' / กดปุ่มเมนู"] --> CustList["กด Quick Reply 'ดูเคสล่าสุดทั้งหมด' (LIST)"]
+            CustList --> CustPick["เลือกเลขเคส (เช่น TCK-2026-46939)"]
+            CustPick --> ReadStatus["ระบบอ่านสถานะ Real-time จากฐานข้อมูล<br>(TicketLifecycle State Machine)"]
+        end
+        StateInProgress -.-> ReadStatus
+        StateWaitCust -.-> ReadStatus
+        
+        ReadStatus --> ReturnStatusReport["บอทรายงานสถานะปัจจุบัน + เวลา SLA ที่เหลือ<br>+ แนบปุ่มดำเนินการตามสถานะนั้นๆ"]
+        
+        %% Monitoring Track B: Proactive High-Frequency Alerts
+        subgraph TrackB["【Track B: ระบบและทีมติดตามเชิงรุก (เพิ่มความถี่)】"]
+            WorkerScan["SLA Worker ตรวจสอบตั๋ว Urgent ทุก 15 นาที"] --> DevCheckInterval["สะกิด Dev ทุก 1 ชม.<br>(1h: Root Cause / 2h: Code / 3h: Deploy)"]
+            DevCheckInterval --> CheckBlocker{"พบ Blocker หรือ<br>มีแววช้ากว่า SLA?"}
+            CheckBlocker -- "เสี่ยงหลุด SLA" --> PreBreachAlert["Escalate ถึง Lead & ส่งข้อความ<br>ขอขยายเวลากับลูกค้าล่วงหน้า 30-45 นาที"]
+            CheckBlocker -- "คืบหน้าตามแผน" --> CustInterimPush["ส่ง LINE Push Update ให้ลูกค้าทุก 1.5 - 2 ชม.<br>(รายงานความคืบหน้าระหว่างทาง)"]
+        end
+        StateInProgress -.-> WorkerScan
     end
 
-    %% STAGE 4: CLOSURE
-    subgraph S4["ระยะที่ 4: การปิดเคสสมบูรณ์ (Closure & Feedback)"]
-        C3 --> D1["ลูกค้าตรวจสอบความถูกต้องของระบบ/เอกสาร"]
-        D1 --> D2["ลูกค้ากดปุ่ม 'ปิดเคส' หรือพิมพ์ยืนยัน"]
-        D2 --> D3["Deterministic Close Net ตรวจจับ & ปิดตั๋ว"]
-        D3 --> D4["Sync ปิดเคสไปยัง Plane.so & ส่งข้อความขอบคุณ"]
+    %% STAGE 3: RESOLUTION & UAT
+    subgraph S3["ระยะที่ 3: แก้ไขเสร็จสิ้น & ตรวจรับ (Resolution & Verification UAT)"]
+        DevCheckInterval --> DevDeployDone["Dev แก้ไขโค้ด/ดาต้า ➔ เทสต์ผ่าน ➔ Deploy สำเร็จ ✓<br>ปรับสถานะใน Plane.so เป็น 'Done'"]
+        DevDeployDone --> PlaneWebhook["Plane Webhook / Reverse Poller ทำงาน<br>(Asymmetric Boundary: Done ➔ RESOLVED)"]
+        PlaneWebhook --> StateResolved["ตั๋วเข้าสู่สถานะ: RESOLVED<br>(งานเทคนิคเสร็จแล้ว รอลูกค้าตรวจรับ)"]
+        
+        StateResolved --> PushUAT["ส่งแจ้งเตือนลูกค้าทาง LINE:<br>'แก้ไขเรียบร้อยแล้ว กรุณาตรวจสอบความถูกต้อง'<br>พร้อม Quick Reply: [ผ่าน / ปิดเคส] [ไม่ผ่าน]"]
+        ReturnStatusReport -.->|"กรณีตั๋วอยู่สถานะ RESOLVED"| PushUAT
     end
 
-    S1 --> S2 --> S3 --> S4
+    %% STAGE 4: VERIFICATION & CLOSURE
+    subgraph S4["ระยะที่ 4: การปิดเคส และการแยกกรณีไม่ผ่าน (Verification & Closure Decision)"]
+        PushUAT --> CustVerify{"ผลการตรวจสอบของลูกค้า<br>(ผ่าน หรือ ไม่ผ่าน?)"}
+        
+        %% Path Pass
+        CustVerify -- "1. ผ่าน (Pass)" --> StateConfirmed["ตั๋วเข้าสู่สถานะ: CUSTOMER_CONFIRMED"]
+        StateConfirmed --> StateClosed["ตั๋วเข้าสู่สถานะ: CLOSED (Terminal)<br>+ ซิงค์ปิด Issue ใน Plane.so<br>+ ส่งข้อความขอบคุณลูกค้า"]
+        StateClosed --> EndSuccess(["● END: ปิดเคสสมบูรณ์"])
+        
+        %% Path Fail
+        CustVerify -- "2. ไม่ผ่าน (Fail)" --> EvaluateFail{"ประเมินอาการที่ไม่ผ่าน"}
+        
+        %% Same Bug
+        EvaluateFail -- "Bug เดิม (จุดเดิมยังไม่หาย)" --> StateReopened["ตั๋วเข้าสู่สถานะ: REOPENED<br>【ใช้ Ticket เดิม】 ไม่เปิดตั๋วใหม่ซ้ำซ้อน<br>แนบรายละเอียดที่ลูกค้าแจ้งกลับเข้า Plane.so"]
+        StateReopened --> StateInProgress
+        
+        %% New Bug
+        EvaluateFail -- "Bug ใหม่ (เป็นอาการอื่นที่จุดใหม่)" --> BranchNewTicket["【เปิด Ticket ใหม่】<br>ปิดหรือแยกขอบเขตตั๋วเดิม<br>นำอาการใหม่เข้าสู่กระบวนการเปิดเคส"]
+        BranchNewTicket --> Start
+    end
+
+    EndInfoNo(["● END: จบการสนทนา"])
 ```
 
 ---
 
-## 2. ลำดับการทำงานข้ามระบบแบบละเอียด (Cross-System Sequence Diagram)
+## 2. เจาะลึก Flow ปัญหาประเภท "Information" (พร้อมคลังเอกสาร & Human Takeover)
+
+ในระบบ AutomationX ปัญหาประเภท `Information` ไม่ใช่แค่ตอบข้อความเปล่าๆ แต่มี Sub-flow ที่สมบูรณ์ตามมาตรฐานระบบ:
+
+```mermaid
+flowchart TD
+    InboundInfo["ลูกค้าสอบถามข้อมูลทั่วไป / ขั้นตอน / ระเบียบ / คู่มือ"] --> CallTool["AgentX เรียก Tool: search_project_docs(query, project_id)"]
+    CallTool --> VectorSearch[("ค้นหา Semantic & Keyword ในคลังความรู้<br>PostgreSQL pgvector / Knowledge Base")]
+    
+    VectorSearch --> HasEvidence{"พบคู่มือหรือเอกสาร<br>ที่ตรงกับคำถามหรือไม่?"}
+    
+    %% กรณีพบ
+    HasEvidence -- "พบเอกสารตรงจุด" --> FormatAns["AI สรุปคำตอบ 1-2 ประเด็นหลักอย่างกระชับ<br>พร้อมแนบขั้นตอนและลิงก์เอกสารอ้างอิง"]
+    FormatAns --> AskMore["ลงท้าย: 'อยากรู้เรื่องไหนเพิ่มเติมก็ถามต่อได้เลยนะคะ'"]
+    AskMore --> DoneInfo(["จบเทิร์น (ไม่เปิดตั๋ว)"])
+    
+    %% กรณีไม่พบ
+    HasEvidence -- "ไม่พบเอกสาร (ANSWER_NOT_FOUND)" --> NoHallucinate["AI ไม่คาดเดาข้อมูลเอง (No Hallucination)<br>แจ้งลูกค้าอย่างสุภาพว่าไม่พบข้อมูลในคู่มือปัจจุบัน"]
+    NoHallucinate --> OfferOption{"ให้ตัวเลือกลูกค้าผ่าน Quick Reply"}
+    
+    OfferOption -- "1. ต้องการคุยกับเจ้าหน้าที่" --> DoTakeover["เรียก escalate_to_pm / Human Takeover<br>แจ้งเตือน Admin ในระบบ TicketX<br>เพื่อส่งต่อบทสนทนาให้คนเข้ามารับช่วง"]
+    OfferOption -- "2. ประสานงานเปิดตั๋วสอบถาม" --> RouteToTicket["ส่งต่อไปยังกระบวนการเปิด Ticket<br>(ประเภท: Inquiry / Request)"]
+    OfferOption -- "3. ไม่ต้องการอะไรเพิ่ม" --> ByeInfo["ขอบคุณลูกค้าและจบการสนทนา"]
+```
+
+---
+
+## 3. วงจรชีวิตของสถานะตั๋ว (Ticket Lifecycle State Machine)
+
+ในโค้ด `system/backend/src/domain/ticket/TicketLifecycle.ts` และ `TicketStateMachine.ts` สถานะของตั๋วถูกควบคุมอย่างเข้มงวด ดังนี้:
+
+| สถานะใน TicketX (Customer Lifecycle) | ความหมายและบริบทการทำงาน | สถานะที่เชื่อมกับ Plane.so | ใครเป็นคนเปลี่ยนสถานะได้ (Actor) |
+| :--- | :--- | :--- | :--- |
+| `NEW` | ตั๋วถูกสร้างขึ้นในระบบ รอการจัดคิว | `Backlog` | System / Operator |
+| `TRIAGED` | ผ่านการคัดกรองและประเมินเบื้องต้นแล้ว | `Backlog` | Operator / System |
+| `IN_PROGRESS` | ทีม Dev กำลังดำเนินการตรวจสอบและแก้ไข | `Open` | Dev (Plane) / Operator |
+| `WAITING_CUSTOMER` | ทีมงานขอข้อมูลเพิ่มเติมจากลูกค้า (เช่น ขอรูป Log เพิ่ม) | `Open` | Operator / System |
+| `WAITING_INTERNAL` | รอการประสานงานภายในระหว่างทีม | `Open` | Operator / System |
+| **`RESOLVED`** | **Dev แก้ไขเสร็จ (Done ใน Plane) ➔ ส่งให้ลูกค้าตรวจรับ (UAT)** | **`Done`** | **Plane / System (ไม่ใช่ Closed!)** |
+| `CUSTOMER_CONFIRMED` | ลูกค้าตรวจสอบแล้วยืนยันว่า "ผ่าน" | `Done` | **Customer เท่านั้น** |
+| **`CLOSED`** | ตั๋วถูกปิดอย่างเป็นทางการ (Terminal State) | **`Done`** | **Customer / System** |
+| **`REOPENED`** | **ลูกค้าแจ้ง "ไม่ผ่าน" (Bug เดิม) ➔ วนกลับไปแก้ต่อ** | **`Open`** | **Customer / Operator** |
+| `CANCELLED` | ยกเลิกเคส (เช่น ลูกค้าแจ้งยกเลิกก่อนเริ่มงาน) | `Cancelled` | Customer / Operator |
+
+> [!IMPORTANT]
+> **หลักการ Asymmetric Boundary (ความปลอดภัยของสถานะ):**  
+> เมื่อทีม Dev แก้ไขงานเสร็จใน Plane.so และปรับสถานะเป็น `Done` ระบบจะเปลี่ยนสถานะใน TicketX เป็น **`RESOLVED` เท่านั้น (ห้ามเปลี่ยนเป็น `CLOSED` เด็ดขาด)**  
+> เพราะ *"การที่ Dev ทำเสร็จ ไม่ได้แปลว่าปัญหาได้รับการแก้ไขถูกต้องในมุมมองของลูกค้า"* ตั๋วจะปิดเป็น `CLOSED` ได้ก็ต่อเมื่อ **ลูกค้าเป็นผู้ยืนยันตรวจรับด้วยตนเอง** เท่านั้น!
+
+---
+
+## 4. รายละเอียดจุดเชื่อมโยงของการตรวจสอบสถานะ (Track A ที่ไม่ขาดตอน)
+
+จากข้อสังเกตเรื่องสถานะที่หายไป เมื่อลูกค้ากดดูสถานะในแชต:
+1. **เมื่อลูกค้าพิมพ์ `"ตรวจสอบสถานะ"` ➔ กด `"ดูเคสล่าสุดทั้งหมด"`:**
+   - ระบบจะ Query รายการตั๋วที่ยังไม่ปิด (`status NOT IN ('CLOSED', 'CANCELLED')`)
+2. **เมื่อเลือกรหัสตั๋ว เช่น `TCK-2026-46939`:**
+   - ระบบอ่านค่าจาก `TicketStateMachine`
+   - **ถ้าสถานะคือ `IN_PROGRESS`:** บอทจะรายงานความคืบหน้า + เวลา SLA เป้าหมาย + แจ้งว่าทีมงานกำลังเร่งดำเนินการ
+   - **ถ้าสถานะคือ `WAITING_CUSTOMER`:** บอทจะขึ้นข้อความเตือนว่า *"ทีมงานกำลังรอข้อมูล [เรื่องที่ขอ] เพิ่มเติมจากคุณลูกค้าอยู่นะคะ"*
+   - **ถ้าสถานะคือ `RESOLVED` (งานเสร็จแล้วรอลูกค้าตรวจ):** บอทจะไม่ใช่แค่บอกสถานะ แต่จะ **แนบปุ่มยืนยันผลตรวจรับ UAT ทันที**:
+     - ปุ่ม **[ ตรวจสอบแล้ว ถูกต้อง (ปิดเคส) ]**
+     - ปุ่ม **[ ยังพบปัญหา (ไม่ผ่าน) ]**
+   - **ทำให้เส้นทางของลูกค้า (Track A) เชื่อมโยงกลับเข้าสู่กระบวนการปิดเคส (Stage 4) ได้ทันทีโดยไม่มีจุดตัน!**
+
+---
+
+## 5. การจัดการตอนปิดเคสแบบละเอียด: "ผ่าน" vs "ไม่ผ่าน (Bug เดิม vs Bug ใหม่)"
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor Customer as ลูกค้า (LINE OA)
-    participant Gateway as Channel Gateway & Fastify
-    participant AgentCore as Main AI Core & AgentX
-    participant DB as PostgreSQL (csdb)
-    participant Plane as Plane.so (PM Tool)
-    participant Dev as ทีมพัฒนา (Dev Team)
-    participant Worker as SLA Monitoring Worker
+    participant Core as AutomationX Backend
+    participant SM as Ticket State Machine
+    participant Plane as Plane.so (Dev)
 
-    %% 1. Intake & Ticket Creation
-    Note over Customer, Gateway: ระยะที่ 1: รับเรื่องและเปิดเคส
-    Customer->>Gateway: ส่งข้อความแจ้งปัญหา (เช่น SLIP ชื่อเป็น NULL)
-    Gateway->>Gateway: Debounce 15s (รวบข้อความ + รูปภาพ)
-    Gateway->>AgentCore: ส่งข้อความรวมเข้า Process
-    AgentCore->>Customer: ส่ง Quick Reply ยืนยัน: [ ยืนยัน ] [ ยกเลิก ]
-    Customer->>Gateway: แตะปุ่ม "ยืนยัน"
-    Gateway->>AgentCore: Execute tool "create_ticket"
-    AgentCore->>DB: INSERT INTO tickets (status: 'IN_PROGRESS', priority: 'urgent')
-    AgentCore->>Plane: POST /work-items/ (สร้าง Issue ใน Plane.so)
-    AgentCore-->>Customer: "เปิดเคสเรียบร้อยค่ะ รหัส TCK-2026-46939 คาดว่าจะเสร็จภายในวันนี้ 13:05 น. (4 ชม.)"
+    Note over Customer, Plane: ขั้นตอนส่งมอบงานและการตรวจรับ (UAT)
+    Plane->>Core: Dev ปรับสถานะเป็น Done
+    Core->>SM: transition(to: 'RESOLVED', actor: 'plane')
+    SM-->>Core: Status = RESOLVED
+    Core-->>Customer: Push แจ้งเตือน: "ระบบแก้ไขเรียบร้อยแล้วค่ะ รบกวนตรวจสอบนะคะ"<br>พร้อมตัวเลือก: [ ผ่าน / ปิดเคส ] [ ไม่ผ่าน ]
 
-    %% 2. Dual-Track Monitoring
-    Note over Customer, Worker: ระยะที่ 2: การติดตาม 2 รูปแบบคู่ขนาน
-
-    par แบบที่ 1: ลูกค้าติดตามเอง (Inbound)
-        Customer->>Gateway: พิมพ์ "ตรวจสอบสถานะ" ➔ กด "ดูเคสล่าสุดทั้งหมด"
-        Gateway->>DB: SELECT tickets WHERE customer_id = ... (LIST)
-        DB-->>Gateway: ส่งตั๋วที่กำลังดำเนินการ
-        Gateway-->>Customer: แสดงลิสต์ตั๋ว
-        Customer->>Gateway: พิมพ์ "TCK-2026-46939"
-        Gateway->>DB: SELECT ticket status & SLA
-        Gateway-->>Customer: "ตอนนี้ตรวจสอบเบื้องต้นแล้ว กำลังแก้ข้อมูล คาดว่าจะเสร็จก่อน 13:05 น."
-    and แบบที่ 2: ระบบและทีมติดตามเชิงรุก (Outbound Proactive)
-        loop ตรวจสอบทุก 1 ชั่วโมง (เพิ่มความถี่)
-            Worker->>DB: Query ตั๋ว Urgent ที่ไม่มีการขยับ > 60 นาที
-            Worker->>Dev: ยิงแจ้งเตือน Slack/LINE Dev: "เคส TCK-2026-46939 ครบ 1 ชม. ขอสถานะ Root cause ค่ะ"
-            Dev-->>Worker: อัปเดตสถานะ: "พบจุด NULL แล้ว กำลังแก้ Query"
-        end
-        Worker->>Customer: (ครบ 2 ชม.) LINE Push: "อัปเดตความคืบหน้าเคส TCK-2026-46939 ทีมกำลังแก้ข้อมูลตามแผนเดิม 13:05 น. ค่ะ"
+    alt 1. ลูกค้าตรวจแล้ว "ผ่าน" (Pass)
+        Customer->>Core: แตะปุ่ม "ผ่าน / ปิดเคส"
+        Core->>SM: transition(to: 'CUSTOMER_CONFIRMED', actor: 'customer')
+        Core->>SM: transition(to: 'CLOSED', actor: 'system')
+        Core->>Plane: Sync Closure to Plane (Close Work Item)
+        Core-->>Customer: "ปิดเคสเรียบร้อยค่ะ ขอบคุณที่ใช้บริการนะคะ 🙏"
+    else 2. ลูกค้าตรวจแล้ว "ไม่ผ่าน" — เป็น Bug เดิม
+        Customer->>Core: แตะปุ่ม "ไม่ผ่าน" + ระบุ: "ชื่อเจ้าหน้าที่ยังเป็น NULL เหมือนเดิม"
+        Core->>SM: transition(to: 'REOPENED', actor: 'customer', reason: 'Same Bug persists')
+        Core->>Plane: Reopen Issue ➔ State: Open + Post Comment อาการที่ลูกค้าแจ้ง
+        Core->>Core: แจ้งเตือนด่วนเข้ากลุ่ม Dev ทันที
+        Core-->>Customer: "รับทราบค่ะ ทีมงานขออภัยด้วยนะคะ กำลังเร่งตรวจสอบในเคสเดิม (TCK-2026-46939) ให้อีกครั้งทันทีค่ะ"
+    else 3. ลูกค้าตรวจแล้ว "ไม่ผ่าน" — เป็น Bug ใหม่
+        Customer->>Core: แตะปุ่ม "ไม่ผ่าน" + ระบุ: "ชื่อขึ้นแล้ว แต่ยอดสุทธิคำนวณผิด"
+        Core->>Core: วิเคราะห์พบเป็นอาการใหม่นอกเหนือสโคปเดิม
+        Core->>SM: transition(to: 'CUSTOMER_CONFIRMED', actor: 'system') ➔ ปิดตั๋วเดิม
+        Core-->>Customer: "สำหรับปัญหายอดสุทธิคำนวณผิด เป็นข้อผิดพลาดคนละส่วนกัน ขออนุญาตเปิดเป็นเคสใหม่เพื่อติดตามให้นะคะ"
+        Core->>Core: ส่งเรื่องวนกลับไปที่ START ➔ สร้าง Ticket รหัสใหม่ (TCK ตัวใหม่)
     end
-
-    %% 3. Resolution & Closure
-    Note over Dev, Customer: ระยะที่ 3 & 4: แก้ไขเสร็จและปิดเคส
-    Dev->>Plane: ปรับสถานะ Issue เป็น "Done"
-    Plane->>Gateway: Webhook: Issue Updated (state: Done)
-    Gateway->>DB: UPDATE tickets SET status = 'RESOLVED'
-    Gateway->>Customer: LINE Push: "แก้ไขข้อมูล SLIP เรียบร้อยแล้วค่ะ รบกวนตรวจสอบนะคะ"
-    Customer->>Gateway: กดปุ่มเมนู "ปิดเคส"
-    Gateway->>DB: UPDATE tickets SET status = 'CLOSED'
-    Gateway->>Plane: Sync Closure to Plane
-    Gateway-->>Customer: "ปิดเคส TCK-2026-46939 เรียบร้อยแล้วค่ะ ขอบคุณที่ใช้บริการนะคะ 🙏"
 ```
-
----
-
-## 3. เจาะลึกการวางระบบและการทำงานในแต่ละระยะ (Architecture Components)
-
-### ระยะที่ 1: Intake & Smart Triage (การรับเรื่องและคัดกรอง)
-1. **Channel Ingestion (LINE Debounce Service):**
-   - ดักจับ Event จากลูกค้า ถ้าลูกค้าส่งข้อความติดต่อกันหลายบรรทัดหรือส่งรูปพร้อมข้อความ ระบบจะหน่วงเวลาไว้ **15 วินาที** (`LineMessageBatchingService`) เพื่อรวบรวมเป็นก้อนเดียว ก่อนส่งเข้าสมองกล AI
-2. **AI Intent Classification (AgentX):**
-   - **Fast Path (คำถามทั่วไป/FAQ):** หากเป็นคำถามที่ AI มีข้อมูลตอบได้ (เช่น สอบถามระเบียบ, ขั้นตอนการขอเอกสาร) บอทจะตอบทันทีและ **ไม่สร้างตั๋วงาน** เพื่อไม่ให้รกระบบ
-   - **Case Creation Path (แจ้งปัญหา/ข้อผิดพลาด):** หากเป็นปัญหาเชิงเทคนิค (เช่น สลิปแสดงค่า NULL) AI จะสรุปข้อมูล:
-     - *Subject:* หัวข้อปัญหาที่กระชับ
-     - *Description:* รายละเอียดและผลกระทบ
-     - *Priority:* ประเมินความเร่งด่วน (Urgent / High / Normal)
-     - *Confirmation Gate:* ส่งปุ่ม Quick Reply ให้ลูกค้ากด **"ยืนยัน"** หรือ **"ยกเลิก"**
-3. **Ticket Provisioning & Promotion:**
-   - เมื่อลูกค้ายืนยัน ระบบเรียก internal tool `create_ticket`:
-     - บันทึกลง PostgreSQL ในตาราง `tickets` ได้เลข `TCK-YYYY-NNNNN`
-     - ยิง API เชื่อมต่อไปยัง **Plane.so** สร้าง Work Item ส่งต่อไปให้ทีม Dev ทันที พร้อมแนบรูปลิงก์จาก S3
-     - คำนวณ SLA Due Time (เช่น เคสด่วน = 4 ชั่วโมงข้างหน้า) แล้วตอบยืนยันลูกค้า
-
----
-
-### ระยะที่ 2: Dual-Track Monitoring (การติดตามสถานะ 2 ช่องทาง)
-
-#### รูปแบบที่ 1: ลูกค้าติดตามด้วยตนเอง (Customer Self-Service)
-- **พฤติกรรม:** ลูกค้าเป็นฝ่ายทักเข้ามาเพราะอยากทราบสถานะปัจจุบัน
-- **Flow การทำงาน:**
-  1. ลูกค้าพิมพ์หรือกด Rich Menu คำว่า **"ตรวจสอบสถานะ"**
-  2. ระบบตอบกลับพร้อมปุ่ม Quick Reply พิเศษ **"ดูเคสล่าสุดทั้งหมด"**
-  3. เมื่อแตะปุ่ม ระบบจะส่งข้อความชะลอการรอ *"รับเรื่องแล้วค่ะ รอสักครู่นะคะ"* และเรียกฟังก์ชัน `LIST` จาก Hub ดึงเฉพาะตั๋วที่ยัง Active ของผู้ใช้คนนั้น
-  4. บอทแสดงรายการตั๋วพร้อม Bullet Point
-  5. ลูกค้าส่งรหัสตั๋วที่ต้องการ ➔ ระบบตอบรายละเอียดสถานะล่าสุด พร้อมข้อความสัญญาเวลา SLA ล่วงหน้า
-
-#### รูปแบบที่ 2: ระบบและทีมงานติดตามเชิงรุก (Proactive Internal Follow-up)
-- **พฤติกรรม:** ลูกค้าไม่ต้องเอ่ยปากถาม ระบบและทีมงานคอยสะกิดตามงานและรายงานผลเป็นระยะ
-- **กลไกการทำงาน (เพิ่มความถี่สำหรับเคสด่วน 4 ชม.):**
-  1. **สะกิด Dev ทุก 1 ชั่วโมง (Internal Push):**
-     - *ชั่วโมงที่ 1 (10:05 น.):* เช็คว่าวิเคราะห์ Root Cause เจอหรือยัง ต้องการ Log หรือ Data เพิ่มไหม
-     - *ชั่วโมงที่ 2 (11:05 น.):* เช็คความคืบหน้าการแก้ Code/Database ปลดล็อกเกอร์ทันที
-     - *ชั่วโมงที่ 3 (12:05 น.):* เช็คสถานะ Build, Deployment และผลเทส
-  2. **รายงานลูกค้าทุก 1.5 – 2 ชั่วโมง (Customer Interim Push):**
-     - ระบบยิง LINE Push Notification ส่งข้อความสรุปความคืบหน้าให้ลูกค้าทราบตามรอบ
-  3. **การจัดการความเสี่ยง (SLA Pre-breach Management):**
-     - หากถึงชั่วโมงที่ 3 แล้วงานยังไม่เรียบร้อย ทีมงานจะแจ้ง **ขอขยายเวลาอย่างเป็นทางการล่วงหน้า 30-45 นาที** (ห้ามปล่อยให้เลยกำหนดโดยไม่แจ้ง)
-
----
-
-### ระยะที่ 3: Resolution & Sync (การแก้ไขและตรวจรับ)
-1. **Dev Resolved:** ทีมพัฒนาทำ Patch ขึ้นระบบเสร็จสิ้น และเปลี่ยนสถานะใน Plane.so เป็น `Done`
-2. **Reverse Poller / Webhook:** 
-   - `PlaneWebhookService` ใน TicketX Backend จะรับ Webhook ทันทีที่มีการเปลี่ยนสถานะ
-   - อัปเดตสถานะในตาราง `tickets` เป็น `RESOLVED`
-3. **Notify Customer:**
-   - ระบบส่ง Push Message แจ้งลูกค้าทาง LINE พร้อมคำแนะนำให้ตรวจสอบข้อมูลในระบบ
-
----
-
-### ระยะที่ 4: Deterministic Case Closure (การปิดเคสสมบูรณ์)
-1. **Onboarding / Menu Integration:**
-   - ลูกค้าสามารถแตะการ์ดเมนู **"ปิดเคส"** หรือพิมพ์บอกว่าตรวจสอบเรียบร้อยแล้ว
-2. **Deterministic Close Net:**
-   - ระบบตรวจจับบริบทการปิดเคสอย่างแม่นยำ ไม่สับสนกับการถามสถานะ
-   - ปรับสถานะในฐานข้อมูลเป็น `CLOSED` และส่งสถานะไปปิด Issue ใน Plane.so
-3. **Closure Farewell:**
-   - ส่งข้อความยืนยันปิดเคสอย่างสุภาพ (ลงท้ายด้วย "ค่ะ/นะคะ") และบันทึกประวัติการสนทนาเข้าฐานข้อมูลอย่างสมบูรณ์
-
----
-
-## 4. ตารางสรุปหน้าที่และความรับผิดชอบของแต่ละส่วนในระบบ
-
-| ส่วนประกอบ (Component) | บทบาทในระยะที่ 1 (Intake) | บทบาทในระยะที่ 2 (Tracking) | บทบาทในระยะที่ 3-4 (Close) |
-| :--- | :--- | :--- | :--- |
-| **LINE Official Account** | หน้าด่านรับข้อความ และแสดงปุ่ม Quick Reply ยืนยัน | รองรับเมนูตรวจสอบสถานะ / รับข้อความ Push แจ้งเตือน | รับคำสั่งปิดเคส / แสดงข้อความขอบคุณ |
-| **Channel Gateway & Fastify** | ทำ Debounce 15 วิ และตรวจจับ Signature | บริหารคิวข้อความ (Agent Session Queue) | จัดการ Webhook และสิทธิ์การเข้าถึง |
-| **Main AI Core & AgentX** | คัดกรอง Intent (ทั่วไป vs เปิดเคส) | แปลงคำถามสถานะ (`LIST` / `GET_STATUS`) | ตรวจจับคำสั่งปิดเคส (Deterministic Close Net) |
-| **PostgreSQL (`csdb`)** | บันทึก `tickets`, `messages`, `attachments` | บันทึกประวัติการอัปเดตสถานะและ SLA Due Date | ปรับสถานะเป็น `RESOLVED` / `CLOSED` |
-| **Plane.so** | รับ Work Item ไปจัดคิวให้ทีม Dev | ติดตามความคืบหน้าของ Task ใน Sprint | รับการปิดตั๋วเมื่อเคสเสร็จสมบูรณ์ |
-| **SLA Monitoring Worker** | คำนวณกรอบเวลา SLA ตามระดับความด่วน | วนลูปสะกิด Dev ทุก 1 ชม. & ยิงเตือนก่อนหลุด SLA | สรุปเวลาที่ใช้ในการแก้ไข (Resolution Time) |
