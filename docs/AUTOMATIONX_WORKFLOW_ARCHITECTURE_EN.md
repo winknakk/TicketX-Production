@@ -58,51 +58,42 @@ The AutomationX ecosystem is organized into five distinct architectural tiers:
 
 ```mermaid
 flowchart TB
-    subgraph Tier1["Tier 1: Client & External Ingress"]
-        LINE_PLATFORM["LINE Platform / LINE Messaging API"]
-        PLANENOTIF["Plane Project Management API"]
-    end
-
-    subgraph Tier2["Tier 2: Ingress & Routing Tier"]
-        LROUTER["LINE Webhook Router (Activepieces Flow)<br/>- Signature Verification & Traffic Switching"]
-        BACKEND["Fastify Backend Core (lineWebhook.ts)<br/>- Ingress Security, DB Persist, Fast Ack, Token Minting"]
-    end
-
-    subgraph Tier3["Tier 3: Queue & Gateway Decoupling"]
-        QUEUE["AgentSessionQueueService / BatchingService"]
-        CGW["Channel Gateway - LINE (Flow)<br/>- Payload Normalization & Quote Token Extraction"]
-    end
-
-    subgraph Tier4["Tier 4: Multi-Agent Orchestration"]
-        MAIN["Main AI Core Flow (Flow)<br/>- Session Resolver Transaction<br/>- Conversation Gate Agent Classifier<br/>- Response Persona Formatter"]
-    end
-
-    subgraph Tier5["Tier 5: Domain Subflows & Backing Services"]
-        DOCS["Sub Flow - Project Docs Search<br/>- Scoped Project MCP Tool<br/>- Vector Knowledge Base Search"]
-        TICKETS["Sub Flow - Ticket Operations Hub<br/>- PostgreSQL Ticket CRUD<br/>- Plane Two-Way API Synchronization"]
-        PLANE_FLOW["Backend - Promote to Plane Flow"]
-        HUMAN_FLOW["Backend - Human Reply Flow"]
-    end
-
-    LINE_PLATFORM -->|HTTPS POST Webhook| LROUTER
-    LROUTER -->|Forward Payload| BACKEND
-    BACKEND -->|1. Fire-and-Forget Fast Ack| LINE_PLATFORM
-    BACKEND -->|2. Mint Signed Execution Token| QUEUE
-    QUEUE --> CGW
-    CGW --> MAIN
-
-    MAIN -->|targetAgent: faq| DOCS
-    MAIN -->|targetAgent: support| TICKETS
-    MAIN -->|Final Response Push API| LINE_PLATFORM
-
-    PLANENOTIF -->|Issue Done Event| TICKETS
-    PLANENOTIF --> PLANE_FLOW
-
-    style LROUTER fill:#0ea5e9,color:#fff
-    style BACKEND fill:#10b981,color:#fff
-    style MAIN fill:#8b5cf6,color:#fff
-    style DOCS fill:#f59e0b,color:#fff
-    style TICKETS fill:#ec4899,color:#fff
+subgraph Tier1["Tier 1: Client & External Ingress"]
+LINE_PLATFORM["LINE Platform / LINE Messaging API"]
+PLANENOTIF["Plane Project Management API"]
+end
+subgraph Tier2["Tier 2: Ingress & Routing Tier"]
+LROUTER["LINE Webhook Router (Flow)<br/>- Signature Verification & Traffic Switching"]
+BACKEND["Fastify Backend Core (TicketX)<br/>- Ingress Security, DB Persist, Fast Ack, Token Minting"]
+end
+subgraph Tier3["Tier 3: Queue & Gateway Decoupling"]
+QUEUE["AgentSessionQueueService / BatchingService"]
+CGW["Channel Gateway - LINE (Flow)<br/>- Payload Normalization & Quote Token Extraction"]
+end
+subgraph Tier4["Tier 4: Multi-Agent Orchestration"]
+MAIN["Main AI Core Flow (Flow)<br/>- Session Resolver Transaction<br/>- Conversation Gate Agent Classifier<br/>- Response Persona Formatter"]
+end
+subgraph Tier5["Tier 5: Domain Subflows & Backing Services"]
+DOCS["Sub Flow - Project Docs Search<br/>- Scoped Project MCP Tool<br/>- Vector Knowledge Base Search"]
+TICKETS["Sub Flow - Ticket Operations Hub<br/>- PostgreSQL Ticket CRUD<br/>- Plane Two-Way API Synchronization"]
+PLANE_FLOW["Backend - Promote to Plane Flow"]
+HUMAN_FLOW["Backend - Human Reply Flow"]
+end
+LINE_PLATFORM -->|1. HTTPS POST Webhook| LROUTER
+LROUTER -->|Forward Payload| BACKEND
+BACKEND -->|2. Mint Signed Execution Token| QUEUE
+QUEUE --> CGW
+CGW --> MAIN
+MAIN -->|if targetAgent = faq| DOCS
+MAIN -->|if targetAgent = support| TICKETS
+MAIN -->|Final Response Push API| LINE_PLATFORM
+PLANENOTIF -->|Poll for Plane events, every 30 seconds| TICKETS
+PLANENOTIF --> PLANE_FLOW
+style LROUTER fill:#0ea5e9,color:#fff
+style BACKEND fill:#10b981,color:#fff
+style MAIN fill:#8b5cf6,color:#fff
+style DOCS fill:#f59e0b,color:#fff
+style TICKETS fill:#ec4899,color:#fff
 ```
 
 ---
