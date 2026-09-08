@@ -60,7 +60,7 @@ The AutomationX ecosystem is organized into five distinct architectural tiers:
 flowchart TB
     subgraph Tier1["Tier 1: Client & External Ingress"]
         LINE_PLATFORM["LINE Platform / LINE Messaging API"]
-        PLANENOTIF["Plane Project Management Webhook"]
+        PLANENOTIF["Plane Project Management API"]
     end
 
     subgraph Tier2["Tier 2: Ingress & Routing Tier"]
