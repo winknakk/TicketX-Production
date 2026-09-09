@@ -117,8 +117,22 @@ export class PostgresAdapter implements DatabaseAdapter {
       }
 
       const { rows } = await pool.query(
-        `INSERT INTO tickets (ticket_id, conversation_id, subject, summary, status, plane_status, priority, created_via, project_id, severity, due_date, org_id, lifecycle_changed_at)
-         VALUES ($1, $2, $3, $4, $5, 'Backlog', $6, 'ai', $7, $8, $9, $10, NOW())
+        // `ticket_number` is written as well as `ticket_id`.
+        //
+        // This used to insert the generated number into `ticket_id` alone, so a
+        // ticket created here had `ticket_number = NULL` — 23 of 114 rows were
+        // in that state. The number was still returned to the browser, sent in
+        // the `ticket_created` event and put in the confirmation email, but the
+        // stored row could not be found by it: the customer-facing lookups read
+        // `ticket_number` only (`CustomerMessagePreRouter` status lookup,
+        // `CustomerConfirmationHandler` close/reopen), so a portal-created
+        // ticket could never be status-checked or closed by its own number.
+        //
+        // `ticket_id` keeps being populated because it is still consulted
+        // (`WHERE ticket_number = $ OR ticket_id = $` further down this file,
+        // AgentRuntime, admin routes); dropping it would break those readers.
+        `INSERT INTO tickets (ticket_number, ticket_id, conversation_id, subject, summary, status, plane_status, priority, created_via, project_id, severity, due_date, org_id, lifecycle_changed_at)
+         VALUES ($1, $1, $2, $3, $4, $5, 'Backlog', $6, 'ai', $7, $8, $9, $10, NOW())
          RETURNING *`,
         [
           ticketNumber,
@@ -1054,14 +1068,14 @@ export class PostgresAdapter implements DatabaseAdapter {
       
       const priorities = (row.ticket_priorities || '').split(' ');
       const highestPriority = priorities.reduce((max: string, pri: string) => {
-        const priorityMap: Record<string, number> = { 'P1': 4, 'P2': 3, 'P3': 2, 'P4': 1 };
+        const priorityMap: Record<string, number> = { 'Urgent': 5, 'High': 4, 'Medium': 3, 'Low': 2, 'None': 1, 'P1': 5, 'P2': 4, 'P3': 3, 'P4': 2, 'P5': 1 };
         if ((priorityMap[pri] || 0) > (priorityMap[max] || 0)) {
           return pri;
         }
         return max;
-      }, 'P4');
+      }, 'None');
 
-      const priorityToSeverity: Record<string, string> = { P1: "Critical", P2: "High", P3: "Medium", P4: "Low" };
+      const priorityToSeverity: Record<string, string> = { Urgent: "Critical", High: "High", Medium: "Medium", Low: "Low", None: "None", P1: "Critical", P2: "High", P3: "Medium", P4: "Low", P5: "None" };
       const highestSeverity = priorityToSeverity[highestPriority] || "Low";
 
       return {

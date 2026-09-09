@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { CustomerChatStream, CustomerChatComposer } from '../components/chat/CustomerChatComponents';
 import { CustomerTicketCard } from '../components/tickets/CustomerTicketComponents';
 import { CreateTicketDrawer } from '../components/tickets/CreateTicketDrawer';
-import { useCustomerSocket } from '../hooks/useCustomerSocket';
+import { useCustomerChat } from '../chat/CustomerChatContext';
 import { useCustomerTickets } from '../hooks/useCustomerTickets';
 import { useCustomerSession } from '../auth/CustomerSessionContext';
 import type { CustomerAppRoute, CustomerTicket } from '../types';
@@ -16,10 +16,52 @@ export function CustomerHomePage({
   onNavigate: (route: CustomerAppRoute) => void;
   onSelectTicket: (ticket: CustomerTicket) => void;
 }) {
-  const { isGuest } = useCustomerSession();
-  const { messages, isTyping, isSending, sendMessage } = useCustomerSocket();
+  const { isGuest, setIsSettingsOpen } = useCustomerSession();
+  const { entries, isTyping, isSending, isConnected, sendMessage, sendPostback, retrySend, pendingAction } =
+    useCustomerChat();
   const { tickets, createTicket } = useCustomerTickets();
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+
+  /**
+   * Quick-action chips. The backend answers every tap with its own reply, and
+   * the two it currently sends map onto portal capability that already exists —
+   * so the local side effect is opening the drawer or changing route, never a
+   * second implementation of either.
+   */
+  const LINE_QUICK_ACTIONS = [
+    { label: "🚀 เริ่มใช้งาน", value: "start" },
+    { label: "📝 แจ้งปัญหา", value: "report_issue", style: "primary" },
+    { label: "🔍 ตรวจสอบสถานะ", value: "check_status" },
+    { label: "✅ ปิดเคส", value: "close_case" },
+    { label: "🔄 เปลี่ยนโปรเจกต์", value: "change_project" },
+    { label: "🔗 เชื่อมใหม่", value: "connect_new" },
+  ];
+
+  const lastActionTimeRef = React.useRef<number>(0);
+
+  const handleAction = (value: string) => {
+    const now = Date.now();
+    if (now - lastActionTimeRef.current < 500) {
+      return; // Debounce rapid double-clicks
+    }
+    lastActionTimeRef.current = now;
+
+    const v = (value || '').trim();
+    if (v === 'report_issue' || v === 'แจ้งปัญหา' || v === 'เปิดตั๋ว' || v === 'เปิดตั๋วแจ้งปัญหาใหม่') {
+      setIsCreateOpen(true);
+      return;
+    }
+    if (v === 'check_status' || v === 'ตรวจสอบสถานะ' || v === 'ดูสถานะ') {
+      onNavigate('tickets');
+      return;
+    }
+    if (v === 'change_project' || v === 'สลับโปรเจกต์' || v === 'เปลี่ยนโปรเจกต์' || v === 'connect_new' || v === 'เชื่อมใหม่') {
+      setIsSettingsOpen(true);
+      return;
+    }
+    // Fallback for conversational action chips (e.g. start, close_case)
+    sendPostback(value);
+  };
 
   const activeTickets = tickets.filter(
     (t) => !['CLOSED', 'CUSTOMER_CONFIRMED', 'CANCELLED'].includes(t.status?.toUpperCase() || '')
@@ -46,8 +88,21 @@ export function CustomerHomePage({
           )}
         </div>
 
-        <CustomerChatStream messages={messages} isTyping={isTyping} />
-        <CustomerChatComposer onSendMessage={sendMessage} isSending={isSending} />
+        <CustomerChatStream
+          entries={entries}
+          isTyping={isTyping}
+          isReconnecting={!isConnected}
+          onAction={handleAction}
+          onRetry={retrySend}
+          pendingAction={pendingAction}
+          isSending={isSending}
+        />
+        <CustomerChatComposer
+          onSendMessage={sendMessage}
+          isSending={isSending}
+          quickActions={LINE_QUICK_ACTIONS}
+          onSelectAction={handleAction}
+        />
       </div>
 
       {/* Secondary Context: Active Ticket Glance (Desktop Right Panel) */}
@@ -70,11 +125,11 @@ export function CustomerHomePage({
           </div>
 
           {activeTickets.length === 0 ? (
-            <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-zinc-800 p-6 text-center text-xs text-zinc-400 bg-zinc-900/40">
+            <div className="flex flex-col items-center justify-center rounded-xl border border-border bg-card p-6 text-center text-xs text-muted-foreground">
               <p>ไม่มีรายการที่รอดำเนินการ</p>
               <button
                 onClick={() => setIsCreateOpen(true)}
-                className="mt-3 flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-700"
+                className="mt-3 flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted transition-colors"
               >
                 <Plus className="h-3.5 w-3.5" />
                 <span>แจ้งปัญหาใหม่</span>
@@ -94,7 +149,7 @@ export function CustomerHomePage({
         isOpen={isCreateOpen}
         onClose={() => setIsCreateOpen(false)}
         onSubmit={async (data) => {
-          await createTicket(data);
+          return await createTicket(data);
         }}
       />
     </div>

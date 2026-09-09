@@ -42,6 +42,11 @@
     "human_session_expire_at": null,
     "last_human_reply_at": null
   },
+  "101": {
+    "conversationId": "101",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:03:15.923Z"
+  },
   "999": {
     "conversationId": "999",
     "status": "ACTIVE_AI",
@@ -64,6 +69,11 @@
     "human_session_started_at": null,
     "human_session_expire_at": null,
     "last_human_reply_at": null
+  },
+  "1009": {
+    "conversationId": "1009",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:03:15.923Z"
   },
   "1041": {
     "conversationId": "1041",
@@ -93,5 +103,364 @@
     "conversationId": "1046",
     "status": "ACTIVE_AI",
     "updatedAt": "2026-08-14T09:43:29.724Z"
+  },
+  "1047": {
+    "conversationId": "1047",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1048": {
+    "conversationId": "1048",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1050": {
+    "conversationId": "1050",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1051": {
+    "conversationId": "1051",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1052": {
+    "conversationId": "1052",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1053": {
+    "conversationId": "1053",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1154": {
+    "conversationId": "1154",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1155": {
+    "conversationId": "1155",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1156": {
+    "conversationId": "1156",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1157": {
+    "conversationId": "1157",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1159": {
+    "conversationId": "1159",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1188": {
+    "conversationId": "1188",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1194": {
+    "conversationId": "1194",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1195": {
+    "conversationId": "1195",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1196": {
+    "conversationId": "1196",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1197": {
+    "conversationId": "1197",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1198": {
+    "conversationId": "1198",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1199": {
+    "conversationId": "1199",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1200": {
+    "conversationId": "1200",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1203": {
+    "conversationId": "1203",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1204": {
+    "conversationId": "1204",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1205": {
+    "conversationId": "1205",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1206": {
+    "conversationId": "1206",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1207": {
+    "conversationId": "1207",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1208": {
+    "conversationId": "1208",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1209": {
+    "conversationId": "1209",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1210": {
+    "conversationId": "1210",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T06:43:02.774Z",
+    "maxLeaseExpiresAt": null,
+    "human_session_started_at": null,
+    "human_session_expire_at": null,
+    "last_human_reply_at": null
+  },
+  "1211": {
+    "conversationId": "1211",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1212": {
+    "conversationId": "1212",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1213": {
+    "conversationId": "1213",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1214": {
+    "conversationId": "1214",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1215": {
+    "conversationId": "1215",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1216": {
+    "conversationId": "1216",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1217": {
+    "conversationId": "1217",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "1218": {
+    "conversationId": "1218",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "99901": {
+    "conversationId": "99901",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "99902": {
+    "conversationId": "99902",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "99903": {
+    "conversationId": "99903",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "99904": {
+    "conversationId": "99904",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "99905": {
+    "conversationId": "99905",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "99906": {
+    "conversationId": "99906",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "99908": {
+    "conversationId": "99908",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "99909": {
+    "conversationId": "99909",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "99910": {
+    "conversationId": "99910",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "99913": {
+    "conversationId": "99913",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "99914": {
+    "conversationId": "99914",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "99915": {
+    "conversationId": "99915",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "99916": {
+    "conversationId": "99916",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "99917": {
+    "conversationId": "99917",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "99918": {
+    "conversationId": "99918",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "99919": {
+    "conversationId": "99919",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "99920": {
+    "conversationId": "99920",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "99921": {
+    "conversationId": "99921",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "99922": {
+    "conversationId": "99922",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "99923": {
+    "conversationId": "99923",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "99924": {
+    "conversationId": "99924",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "99925": {
+    "conversationId": "99925",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T04:46:03.918Z"
+  },
+  "99926": {
+    "conversationId": "99926",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T05:03:52.226Z"
+  },
+  "99927": {
+    "conversationId": "99927",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T05:03:52.226Z"
+  },
+  "99928": {
+    "conversationId": "99928",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T05:03:52.226Z"
+  },
+  "99929": {
+    "conversationId": "99929",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T05:03:52.226Z"
+  },
+  "99930": {
+    "conversationId": "99930",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T05:03:52.226Z"
+  },
+  "99931": {
+    "conversationId": "99931",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T05:03:52.226Z"
+  },
+  "99933": {
+    "conversationId": "99933",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T05:03:52.226Z"
+  },
+  "99934": {
+    "conversationId": "99934",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T06:42:59.555Z"
+  },
+  "99935": {
+    "conversationId": "99935",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T06:42:59.555Z"
+  },
+  "99936": {
+    "conversationId": "99936",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T06:42:59.555Z"
+  },
+  "99937": {
+    "conversationId": "99937",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T06:42:59.555Z"
+  },
+  "99938": {
+    "conversationId": "99938",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T06:42:59.555Z"
+  },
+  "99939": {
+    "conversationId": "99939",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T06:42:59.555Z"
+  },
+  "99941": {
+    "conversationId": "99941",
+    "status": "ACTIVE_AI",
+    "updatedAt": "2026-09-08T06:42:59.555Z"
   }
 }

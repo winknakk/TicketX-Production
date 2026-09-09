@@ -535,6 +535,33 @@ export function selectPlaneTerminalState(states: PlaneStateSummary[]): PlaneStat
   );
 }
 
+/** Plane label attached when the customer re-opens a case. */
+export const PLANE_REOPEN_LABEL = "Re-Open";
+
+/**
+ * The block prepended to the work item description at re-open. `marker` is
+ * the round-specific text used to keep the write idempotent. Pure.
+ */
+export function buildPlaneReopenBlockHtml(meta: {
+  ticketNumber?: string | null;
+  reopenedCount?: number | null;
+  feedback?: string | null;
+  now?: Date;
+}): { html: string; marker: string } {
+  const esc = (v: string) => v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const round = Number(meta.reopenedCount) > 0 ? Number(meta.reopenedCount) : 1;
+  const marker = `\u{1F501} Re-Open #${round}`;
+  // dd/mm/yyyy hh:mm in Bangkok time (Gregorian year; th-TH short style prints a 2-digit Buddhist year).
+  const when = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Bangkok", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })
+    .format(meta.now || new Date())
+    .replace(",", "");
+  const suffix = meta.ticketNumber ? ` (${esc(String(meta.ticketNumber))})` : "";
+  const feedback = String(meta.feedback || "").replace(/\s+/g, " ").trim();
+  const feedbackHtml = feedback ? `<p>อาการที่ลูกค้าแจ้ง: ${esc(feedback)}</p>` : "";
+  const html = `<p><strong>${marker} · ${esc(when)} · ลูกค้าแจ้งว่าอาการเดิมยังไม่หาย${suffix}</strong></p>${feedbackHtml}<hr>`;
+  return { html, marker };
+}
+
 export function selectPlaneBacklogState(states: PlaneStateSummary[]): PlaneStateSummary | undefined {
   const candidates = states.filter((state) => state.id);
   return (
@@ -571,17 +598,59 @@ export function selectPlaneInProgressState(states: PlaneStateSummary[]): PlaneSt
 export function selectPlaneDoneState(states: PlaneStateSummary[]): PlaneStateSummary | undefined {
   const candidates = states.filter((state) => state.id);
   return (
-    candidates.find((state) => ["done", "completed", "resolved", "closed"].includes(state.name?.trim().toLowerCase() || "")) ||
+    candidates.find((state) => ["done", "completed", "resolved", "closed", "close"].includes(state.name?.trim().toLowerCase() || "")) ||
     candidates.find((state) => state.group?.trim().toLowerCase() === "completed")
   );
 }
 
+/** Exact-name lookup after collapsing spaces/underscores/hyphens. */
+function findPlaneStateByName(states: PlaneStateSummary[], names: string[]): PlaneStateSummary | undefined {
+  const norm = (v: string | undefined) => String(v || "").trim().toLowerCase().replace(/[\s_-]+/g, " ");
+  const wanted = names.map(norm);
+  return states.find((state) => state.id && wanted.includes(norm(state.name)));
+}
+
+/** "Re-Open" when the project defines it, otherwise Backlog (the pre-2026-09 behaviour). */
+export function selectPlaneReopenState(states: PlaneStateSummary[]): PlaneStateSummary | undefined {
+  return findPlaneStateByName(states, ["re-open", "reopen", "reopened"]) || selectPlaneBacklogState(states);
+}
+
+/** "Triaged" when defined, otherwise the unstarted/Todo state, otherwise Backlog. */
+export function selectPlaneTriagedState(states: PlaneStateSummary[]): PlaneStateSummary | undefined {
+  return findPlaneStateByName(states, ["triaged", "triage"]) || selectPlaneTodoState(states) || selectPlaneBacklogState(states);
+}
+
+/** "Delivery to Customer" when defined (customer must confirm), otherwise the completed state. */
+export function selectPlaneDeliveryState(states: PlaneStateSummary[]): PlaneStateSummary | undefined {
+  return findPlaneStateByName(states, ["delivery to customer", "delivered to customer", "delivered"]) || selectPlaneDoneState(states) || selectPlaneTerminalState(states);
+}
+
+/** "Waiting for Customer" when defined, otherwise In Progress. */
+export function selectPlaneWaitingCustomerState(states: PlaneStateSummary[]): PlaneStateSummary | undefined {
+  return findPlaneStateByName(states, ["waiting for customer", "waiting customer", "waiting on customer"]) || selectPlaneInProgressState(states);
+}
+
+/**
+ * Maps either vocabulary — a TicketX lifecycle status (RESOLVED, REOPENED …)
+ * or a Plane label (Delivery to Customer, Re-Open …) — to the project's
+ * actual state, always with a group-based fallback so a project that lacks
+ * the specific state still lands somewhere sensible.
+ */
 export function selectPlaneStateForTicketStatus(states: PlaneStateSummary[], status: string): PlaneStateSummary | undefined {
-  const normalized = (status || "").trim().toLowerCase();
-  if (normalized === "backlog") return selectPlaneBacklogState(states);
+  const normalized = (status || "").trim().toLowerCase().replace(/[\s_-]+/g, " ");
+  if (normalized === "backlog" || normalized === "new") return selectPlaneBacklogState(states);
+  if (normalized === "triaged" || normalized === "triage") return selectPlaneTriagedState(states);
   if (normalized === "todo" || normalized === "to do") return selectPlaneTodoState(states) || selectPlaneBacklogState(states);
-  if (normalized === "in progress" || normalized === "in_progress" || normalized === "started") return selectPlaneInProgressState(states);
-  if (normalized === "done" || normalized === "completed" || normalized === "closed" || normalized === "resolved") return selectPlaneDoneState(states) || selectPlaneTerminalState(states);
+  if (["in progress", "started", "open", "waiting internal", "test failed"].includes(normalized)) {
+    return (normalized === "test failed" && findPlaneStateByName(states, ["test failed"])) || selectPlaneInProgressState(states);
+  }
+  if (normalized === "waiting customer" || normalized === "waiting for customer") return selectPlaneWaitingCustomerState(states);
+  if (["re open", "reopen", "reopened"].includes(normalized)) return selectPlaneReopenState(states);
+  // CUSTOMER_CONFIRMED is the pending close question (two-step close): the
+  // customer said it works but has not pressed "ยืนยันปิดเคส" yet, so Plane
+  // must keep showing Delivery to Customer, never Close.
+  if (["resolved", "delivery to customer", "delivered", "customer confirmed"].includes(normalized)) return selectPlaneDeliveryState(states);
+  if (["done", "completed", "closed", "close"].includes(normalized)) return selectPlaneDoneState(states) || selectPlaneTerminalState(states);
   if (normalized === "cancelled" || normalized === "canceled") return selectPlaneCancelledState(states);
 
   const match = states.find((s) => s.name?.trim().toLowerCase() === normalized || s.group?.trim().toLowerCase() === normalized);
@@ -617,6 +686,7 @@ export function findMatchingPlaneWorkItem(
 
 import { PlaneProjectResolver, PlaneProjectConfig } from "./PlaneProjectResolver";
 import { PlaneApiClient } from "./PlaneApiClient";
+import { urgentAlertService } from "./UrgentAlertService";
 
 export class PlaneService {
   private dbAdapter: DatabaseAdapter;
@@ -733,8 +803,9 @@ export class PlaneService {
     const resolvedPlaneIssueId = await this.resolvePlaneWorkItemId(ticketId, String(planeIssueId));
 
     const states = await this.apiClient.listStates(projectConfig);
-    const backlogState = selectPlaneBacklogState(states);
-    if (!backlogState?.id) throw new Error("Cannot reopen linked Plane work item: project has no Backlog state");
+    // "Re-Open" where the project defines it (Excise does), else Backlog.
+    const backlogState = selectPlaneReopenState(states);
+    if (!backlogState?.id) throw new Error("Cannot reopen linked Plane work item: project has no Re-Open or Backlog state");
 
     await this.apiClient.patchWorkItem(projectConfig, resolvedPlaneIssueId, { state: backlogState.id });
 
@@ -773,23 +844,28 @@ export class PlaneService {
     };
   }
 
-  async getOrCreatePlaneLabel(labelName: string, color = "#6366f1"): Promise<string | undefined> {
+  /**
+   * Resolves (or creates) a label id. `projectConfig` scopes the lookup to the
+   * ticket's own Plane project; without it the env default project is used
+   * (pre-2026-09-09 behaviour). The cache is keyed per project.
+   */
+  async getOrCreatePlaneLabel(labelName: string, color = "#6366f1", projectConfig?: PlaneProjectConfig): Promise<string | undefined> {
     const trimmed = labelName.trim();
     if (!trimmed) return undefined;
 
-    const cacheKey = trimmed.toLowerCase();
+    const effectiveConfig: PlaneProjectConfig = projectConfig || {
+      workspaceSlug: config.PLANE_WORKSPACE_SLUG || "ask-natapohn",
+      planeProjectId: config.PLANE_PROJECT_ID || "4e840554-dc75-4e39-b87d-db31d8bcc1c9",
+      apiBaseUrl: config.PLANE_API_URL || "https://projects.oneweb.tech",
+      credentialRef: config.PLANE_API_KEY || "plane_api_mock",
+    };
+    const cacheKey = `${effectiveConfig.planeProjectId}:${trimmed.toLowerCase()}`;
     if (this.labelCache.has(cacheKey)) {
       return this.labelCache.get(cacheKey);
     }
 
     try {
-      const defaultProjectConfig: PlaneProjectConfig = {
-        workspaceSlug: config.PLANE_WORKSPACE_SLUG || "ask-natapohn",
-        planeProjectId: config.PLANE_PROJECT_ID || "4e840554-dc75-4e39-b87d-db31d8bcc1c9",
-        apiBaseUrl: config.PLANE_API_URL || "https://projects.oneweb.tech",
-        credentialRef: config.PLANE_API_KEY || "plane_api_mock",
-      };
-      const projectBaseUrl = this.apiClient.getProjectBaseUrl(defaultProjectConfig);
+      const projectBaseUrl = this.apiClient.getProjectBaseUrl(effectiveConfig);
       const requestHeaders = {
         "Content-Type": "application/json",
         "X-API-Key": config.PLANE_API_KEY || "",
@@ -805,7 +881,7 @@ export class PlaneService {
 
       for (const lbl of labels) {
         if (lbl.id && lbl.name) {
-          this.labelCache.set(lbl.name.trim().toLowerCase(), String(lbl.id));
+          this.labelCache.set(`${effectiveConfig.planeProjectId}:${lbl.name.trim().toLowerCase()}`, String(lbl.id));
         }
       }
 
@@ -1244,6 +1320,13 @@ export class PlaneService {
     }
 
 
+    // New Urgent Alert email, originated here instead of by Plane's webhook
+    // (which never arrives — ISSUE-070). Fire-and-forget: the flow answers only
+    // after Gmail (~20 s) and promotion must not wait for, or fail on, it.
+    void urgentAlertService
+      .notifyPromoted({ ticketRef: lookupId || ticket.ticket_number || ticket.id, planeIssueId })
+      .catch(() => {});
+
     return {
       id: planeIssueId,
       success: true,
@@ -1253,6 +1336,76 @@ export class PlaneService {
       ticket_id: ticket.ticket_id || ticket.id1 || ticket.id,
       status: "In Progress",
     };
+  }
+
+  /**
+   * Posts the customer's re-open feedback as a Plane comment on the linked
+   * work item. Returns false (never throws) when the ticket is not linked or
+   * Plane refuses — feedback is already persisted on the ticket by then.
+   */
+  async addCustomerFeedbackComment(ticketId: string | number, text: string, meta: { ticketNumber?: string | null; reopenedCount?: number | null } = {}): Promise<boolean> {
+    try {
+      const { ticket } = await this.dbAdapter.getTicketCompanyContext(String(ticketId));
+      if (!ticket) return false;
+      const planeIssueId = ticket.planeIssueId || ticket.plane_issue_id;
+      if (!planeIssueId || String(planeIssueId).startsWith("mock-")) return false;
+      const projectConfig = await this.getProjectConfigForTicket(ticket);
+      const resolvedId = await this.resolvePlaneWorkItemId(String(ticketId), String(planeIssueId));
+      const esc = (v: string) => v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>");
+      const header = `👤 Customer feedback (Re-Open${meta.reopenedCount ? ` #${meta.reopenedCount}` : ""}${meta.ticketNumber ? ` · ${meta.ticketNumber}` : ""})`;
+      await this.apiClient.addWorkItemComment(projectConfig, resolvedId, `<p><strong>${esc(header)}</strong></p><p>${esc(text)}</p>`);
+      return true;
+    } catch (err: any) {
+      console.warn(`[PlaneService] Could not add customer feedback comment for ticket ${ticketId}: ${err?.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Marks the linked work item as re-opened where the engineer looks first:
+   * a "Re-Open" label and a block at the top of the description saying which
+   * round this is, when, and what the customer reported. State is NOT touched
+   * here (the outbox pushes Re-Open). Never throws; false = nothing written.
+   */
+  async markWorkItemReopened(
+    ticketId: string | number,
+    meta: { ticketNumber?: string | null; reopenedCount?: number | null; feedback?: string | null } = {}
+  ): Promise<boolean> {
+    try {
+      const { ticket } = await this.dbAdapter.getTicketCompanyContext(String(ticketId));
+      if (!ticket) return false;
+      const planeIssueId = ticket.planeIssueId || ticket.plane_issue_id;
+      if (!planeIssueId || String(planeIssueId).startsWith("mock-")) return false;
+      const projectConfig = await this.getProjectConfigForTicket(ticket);
+      const resolvedId = await this.resolvePlaneWorkItemId(String(ticketId), String(planeIssueId));
+
+      const workItem = await this.apiClient.getWorkItem(projectConfig, resolvedId);
+      const currentDescription = String(workItem?.description_html || "");
+      const existingLabels: string[] = Array.isArray(workItem?.labels)
+        ? workItem.labels.map((l: any) => String(l?.id ?? l)).filter(Boolean)
+        : [];
+
+      const block = buildPlaneReopenBlockHtml({
+        ticketNumber: meta.ticketNumber || ticket.ticket_number || ticket.ticketNumber || null,
+        reopenedCount: meta.reopenedCount ?? null,
+        feedback: meta.feedback ?? null,
+      });
+      const payload: Record<string, unknown> = {};
+      if (!currentDescription.includes(block.marker)) {
+        payload.description_html = `${block.html}${currentDescription}`;
+      }
+      const labelId = await this.getOrCreatePlaneLabel(PLANE_REOPEN_LABEL, "#f97316", projectConfig);
+      if (labelId && !existingLabels.includes(labelId)) {
+        payload.labels = [...existingLabels, labelId];
+      }
+      if (Object.keys(payload).length === 0) return false;
+
+      await this.apiClient.patchWorkItem(projectConfig, resolvedId, payload);
+      return true;
+    } catch (err: any) {
+      console.warn(`[PlaneService] Could not mark work item reopened for ticket ${ticketId}: ${err?.message}`);
+      return false;
+    }
   }
 
   async syncTicketStatusToPlane(ticketId: string, status: string): Promise<PlaneTicketReopenResult> {

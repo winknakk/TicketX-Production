@@ -75,7 +75,7 @@ export interface Message {
   createdAt: string;
 }
 
-export type PriorityLevel = 'critical' | 'high' | 'medium' | 'low';
+export type PriorityLevel = 'Urgent' | 'High' | 'Medium' | 'Low' | 'None' | 'urgent' | 'high' | 'medium' | 'low' | 'none' | 'critical';
 export type TicketStatus = 'open' | 'in_progress' | 'resolved';
 
 export interface Ticket {

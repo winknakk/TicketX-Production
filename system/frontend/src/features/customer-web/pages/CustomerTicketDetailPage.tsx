@@ -3,8 +3,8 @@ import type { CustomerTicket, CustomerAppRoute } from '../types';
 import { useCustomerTicketDetail } from '../hooks/useCustomerTickets';
 import { CustomerStatusBadge } from '../components/tickets/CustomerStatusBadge';
 import { CustomerResolutionCard, CustomerTicketTimeline } from '../components/tickets/CustomerTicketComponents';
-import { ArrowLeft, RefreshCw, Calendar, AlertTriangle } from 'lucide-react';
-import { Button } from '../../../components/ui/Primitives';
+import { ArrowLeft, RefreshCw, Calendar } from 'lucide-react';
+import { Button, DataState } from '../../../components/ui/Primitives';
 
 export function CustomerTicketDetailPage({
   ticketId,
@@ -25,36 +25,23 @@ export function CustomerTicketDetailPage({
   } = useCustomerTicketDetail(ticketId);
 
   if (isLoading) {
-    return (
-      <div className="flex h-full min-h-[300px] items-center justify-center text-xs text-muted-foreground">
-        <div className="flex items-center gap-2">
-          <RefreshCw className="h-4 w-4 animate-spin text-primary" />
-          <span>กำลังโหลดข้อมูลตั๋ว...</span>
-        </div>
-      </div>
-    );
+    return <DataState kind="loading" title="กำลังโหลดข้อมูลตั๋ว…" />;
   }
 
   if (error || !ticket) {
     return (
-      <div className="mx-auto max-w-xl p-6 text-center">
-        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-destructive/10 text-destructive">
-          <AlertTriangle className="h-6 w-6" />
+      <div className="mx-auto max-w-xl p-4 sm:p-6">
+        <DataState
+          kind="error"
+          title={error?.message || 'ไม่พบข้อมูลตั๋วที่ต้องการ'}
+          description="ตั๋วนี้อาจไม่มีอยู่ หรือคุณไม่มีสิทธิ์เข้าถึงข้อมูลของตั๋วนี้ค่ะ"
+        />
+        <div className="flex justify-center">
+          <Button variant="secondary" onClick={onBack}>
+            <ArrowLeft className="h-4 w-4" />
+            <span>กลับสู่หน้ารายการตั๋ว</span>
+          </Button>
         </div>
-        <h3 className="mt-4 text-base font-semibold text-foreground">
-          {error?.message || 'ไม่พบข้อมูลตั๋วที่ต้องการ'}
-        </h3>
-        <p className="mt-1 text-xs text-muted-foreground">
-          ตั๋วนี้อาจไม่มีอยู่ หรือคุณไม่มีสิทธิ์เข้าถึงข้อมูลของตั๋วนี้ค่ะ
-        </p>
-        <Button
-          variant="secondary"
-          onClick={onBack}
-          className="mt-5 gap-2 text-xs rounded-xl"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          <span>กลับสู่หน้ารายการตั๋ว</span>
-        </Button>
       </div>
     );
   }
@@ -105,7 +92,7 @@ export function CustomerTicketDetailPage({
               </span>
             )}
           </div>
-          <CustomerStatusBadge status={ticket.status} size="md" />
+          <CustomerStatusBadge status={ticket.status} />
         </div>
 
         <div>

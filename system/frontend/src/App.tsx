@@ -8,6 +8,7 @@ import { Tickets } from './pages/Tickets';
 import { Customers } from './pages/Customers';
 import { Settings } from './pages/Settings';
 import { Analytics } from './pages/Analytics';
+import { SlaCenter } from './pages/SlaCenter';
 import { TraceViewer } from './pages/TraceViewer';
 
 import { CustomerPortal } from './pages/CustomerPortal';
@@ -400,7 +401,7 @@ export default function App() {
       case 'center-iam': return isSuperAdmin ? <div className="p-6 sm:p-8"><CenterIamManagement /></div> : <Dashboard apiBaseUrl={API_BASE_URL} conversations={conversations as any} conversationsLoading={conversationLoading} conversationsError={conversationError} conversationsUpdatedAt={conversationUpdatedAt} backendHealthy={backendHealthy} refreshConversations={() => fetchConversations(true)} onNavigate={setActiveTab} />;
       case 'master-data': return isSuperAdmin ? <MasterDataManagement /> : <Dashboard apiBaseUrl={API_BASE_URL} conversations={conversations as any} conversationsLoading={conversationLoading} conversationsError={conversationError} conversationsUpdatedAt={conversationUpdatedAt} backendHealthy={backendHealthy} refreshConversations={() => fetchConversations(true)} onNavigate={setActiveTab} />;
       case 'analytics': return <Analytics apiBaseUrl={API_BASE_URL} />;
-      case 'sla-center': return <Analytics apiBaseUrl={API_BASE_URL} />;
+      case 'sla-center': return <SlaCenter apiBaseUrl={API_BASE_URL} onNavigate={setActiveTab} />;
       case 'traces': return <TraceViewer apiBaseUrl={API_BASE_URL} defaultModule="runtime" />;
       case 'automation-flows': return <TraceViewer apiBaseUrl={API_BASE_URL} defaultModule="automation" />;
       case 'prompt-sessions': return <TraceViewer apiBaseUrl={API_BASE_URL} defaultModule="prompts" />;

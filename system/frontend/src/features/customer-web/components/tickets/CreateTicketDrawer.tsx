@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Send, AlertCircle } from 'lucide-react';
+import { X, Send, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { Button } from '../../../../components/ui/Primitives';
 
 export function CreateTicketDrawer({
@@ -9,14 +9,21 @@ export function CreateTicketDrawer({
 }: {
   isOpen: boolean;
   onClose: () => void;
-  onSubmit: (data: { subject: string; summary: string }) => Promise<void>;
+  onSubmit: (data: { subject: string; summary: string }) => Promise<{ success?: boolean; ticketNumber?: string } | void>;
 }) {
   const [subject, setSubject] = useState('');
   const [summary, setSummary] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmedTicket, setConfirmedTicket] = useState<string | null>(null);
 
   if (!isOpen) return null;
+
+  const handleClose = () => {
+    setConfirmedTicket(null);
+    setError(null);
+    onClose();
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -28,16 +35,46 @@ export function CreateTicketDrawer({
     setIsSubmitting(true);
     setError(null);
     try {
-      await onSubmit({ subject: subject.trim(), summary: summary.trim() });
+      const res = await onSubmit({ subject: subject.trim(), summary: summary.trim() });
       setSubject('');
       setSummary('');
-      onClose();
+      if (res && res.ticketNumber) {
+        setConfirmedTicket(res.ticketNumber);
+      } else {
+        handleClose();
+      }
     } catch (err: any) {
       setError(err?.message || 'ไม่สามารถสร้างตั๋วได้ กรุณาลองใหม่อีกครั้ง');
     } finally {
       setIsSubmitting(false);
     }
   };
+
+  if (confirmedTicket) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur-xs">
+        <div className="relative w-full max-w-md rounded-2xl border border-border bg-card p-6 shadow-xl text-center space-y-4 animate-in fade-in zoom-in-95">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-500">
+            <CheckCircle2 className="h-6 w-6" />
+          </div>
+          <h3 className="text-lg font-semibold text-foreground">ส่งเรื่องเรียบร้อยแล้ว</h3>
+          <p className="text-sm text-muted-foreground">
+            เลขที่ตั๋วของคุณคือ <span className="font-semibold text-primary font-mono">{confirmedTicket}</span>
+          </p>
+          <div className="pt-2">
+            <Button
+              type="button"
+              variant="primary"
+              onClick={handleClose}
+              className="w-full"
+            >
+              ปิดหน้าต่าง
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur-xs">
@@ -47,7 +84,7 @@ export function CreateTicketDrawer({
             เปิดตั๋วแจ้งปัญหาใหม่
           </h3>
           <button
-            onClick={onClose}
+            onClick={handleClose}
             className="rounded-lg p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
             aria-label="Close"
           >

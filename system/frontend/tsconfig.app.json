@@ -29,5 +29,10 @@
     "noFallthroughCasesInSwitch": true
   },
   "include": ["src"],
-  "exclude": ["src/test-customer-frontend.ts", "src/test-websocket-auth-audit.ts", "src/**/*.test.ts"]
+  "exclude": [
+    "src/test-customer-frontend.ts",
+    "src/test-websocket-auth-audit.ts",
+    "src/test-webchat-event-normalization.ts",
+    "src/**/*.test.ts"
+  ]
 }

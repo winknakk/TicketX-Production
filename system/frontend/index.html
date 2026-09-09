@@ -10,9 +10,16 @@
     <link rel="stylesheet" href="https://db.onlinewebfonts.com/c/1aa3377e489837a26d019bba501e779d?family=HelveticaNowDisplayW01-Rg" />
     <title>AutomationX Operations</title>
     <script>
+      // Paints the stored theme before first render to avoid a flash. The
+      // default MUST match ThemeProvider's default (light) — this script used
+      // to fall back to dark, so a first-time visitor saw dark paint and then
+      // snap to light the moment React mounted.
       try {
         const savedTheme = localStorage.getItem('theme');
-        document.documentElement.classList.toggle('dark', savedTheme !== 'light');
+        const dark = savedTheme === 'dark';
+        document.documentElement.classList.toggle('dark', dark);
+        document.documentElement.classList.toggle('light', !dark);
+        document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
       } catch (_) {}
     </script>
   </head>

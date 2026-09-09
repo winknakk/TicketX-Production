@@ -9,6 +9,8 @@ import { CustomerTicketDetailPage } from './pages/CustomerTicketDetailPage';
 import { CustomerHelpPage } from './pages/CustomerHelpPage';
 import { SessionExpiredDialog } from './components/common/CustomerAuthAlerts';
 import { useCustomerTickets } from './hooks/useCustomerTickets';
+import { CustomerSettingsModal } from './components/settings/CustomerSettingsModal';
+import { CustomerChatProvider } from './chat/CustomerChatContext';
 
 function CustomerAppInner() {
   const { isSessionExpired, reconnect, dismissSessionExpired } = useCustomerSession();
@@ -84,7 +86,8 @@ function CustomerAppInner() {
 
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground antialiased pb-16 lg:pb-0">
-      <CustomerHeader activeRoute={activeRoute} onNavigate={handleNavigate} />
+      <CustomerHeader activeRoute={activeRoute} />
+      <CustomerSettingsModal />
 
       <div className="flex flex-1 min-h-0">
         <CustomerSidebar
@@ -142,7 +145,15 @@ function CustomerAppInner() {
 export function CustomerWebApp() {
   return (
     <CustomerSessionProvider>
-      <CustomerAppInner />
+      {/*
+        The chat socket lives above the router on purpose. Mounted inside the
+        home page it was torn down on every navigation, and `project_switched`
+        — delivered over this socket after a join code is accepted — was lost
+        whenever the customer happened to be on another route.
+      */}
+      <CustomerChatProvider>
+        <CustomerAppInner />
+      </CustomerChatProvider>
     </CustomerSessionProvider>
   );
 }

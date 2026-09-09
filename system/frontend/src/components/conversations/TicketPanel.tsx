@@ -172,7 +172,7 @@ export const TicketPanel: React.FC = () => {
                   <option key={p.code} value={p.code}>{p.code}</option>
                 ))
               ) : (
-                ["P1", "P2", "P3", "P4"].map((p) => (
+                ["Urgent", "High", "Medium", "Low", "None"].map((p) => (
                   <option key={p} value={p}>{p}</option>
                 ))
               )}

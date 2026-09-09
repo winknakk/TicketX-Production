@@ -39,6 +39,20 @@ export function useCustomerTickets() {
     fetchTickets();
   }, [fetchTickets]);
 
+  useEffect(() => {
+    const handleRealtimeUpdate = () => {
+      fetchTickets();
+    };
+    window.addEventListener('ticketx:project_switched', handleRealtimeUpdate);
+    window.addEventListener('ticketx:ticket_created', handleRealtimeUpdate);
+    window.addEventListener('ticketx:ticket_updated', handleRealtimeUpdate);
+    return () => {
+      window.removeEventListener('ticketx:project_switched', handleRealtimeUpdate);
+      window.removeEventListener('ticketx:ticket_created', handleRealtimeUpdate);
+      window.removeEventListener('ticketx:ticket_updated', handleRealtimeUpdate);
+    };
+  }, [fetchTickets]);
+
   const createTicket = async (payload: {
     subject: string;
     summary: string;
@@ -89,6 +103,18 @@ export function useCustomerTicketDetail(ticketId: string | number | null) {
   useEffect(() => {
     fetchDetail();
   }, [fetchDetail]);
+
+  useEffect(() => {
+    const handleTicketUpdated = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      const data = customEvent.detail;
+      if (data && (String(data.ticketId) === String(ticketId) || String(data.ticketNumber) === String(ticketId))) {
+        fetchDetail();
+      }
+    };
+    window.addEventListener('ticketx:ticket_updated', handleTicketUpdated);
+    return () => window.removeEventListener('ticketx:ticket_updated', handleTicketUpdated);
+  }, [ticketId, fetchDetail]);
 
   const transitionStatus = async (
     targetStatus: 'CUSTOMER_CONFIRMED' | 'REOPENED',

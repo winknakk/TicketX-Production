@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 import { apiFetch } from '../lib/apiFetch';
 import { API_BASE_URL } from '../lib/apiBaseUrl';
+import { isAuthenticated } from '../lib/session';
 
 export interface Project {
   id: string;
@@ -41,6 +42,17 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const controller = new AbortController();
+
+    // The provider wraps the whole app (main.tsx), including the customer
+    // portal — but /api/v1/admin/projects is an operator endpoint. A signed-in
+    // customer has no operator session, so this fired on every portal load and
+    // answered 401 in the console. The operator project selector is not part of
+    // the portal, so there is nothing to fetch there.
+    if (!isAuthenticated()) {
+      setIsLoadingProjects(false);
+      return;
+    }
+
     async function fetchProjects() {
       setIsLoadingProjects(true);
       setProjectsError(null);

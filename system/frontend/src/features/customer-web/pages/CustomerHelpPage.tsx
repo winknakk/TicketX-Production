@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import type { CustomerAppRoute } from '../types';
-import { ChevronDown, Sparkles, BookOpen, MessageSquare } from 'lucide-react';
-import { Button } from '../../../components/ui/Primitives';
+import { ChevronDown, Sparkles, MessageSquare } from 'lucide-react';
+import { Button, PageHeader } from '../../../components/ui/Primitives';
 
 interface FAQItem {
   question: string;
@@ -36,18 +36,11 @@ export function CustomerHelpPage({
 
   return (
     <div className="mx-auto max-w-3xl w-full p-4 sm:p-6 lg:p-8 space-y-8">
-      {/* Title */}
-      <div className="text-center space-y-2">
-        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-          <BookOpen className="h-6 w-6" />
-        </div>
-        <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-foreground">
-          ศูนย์ช่วยเหลือและคำถามที่พบบ่อย (Help Center)
-        </h2>
-        <p className="text-xs sm:text-sm text-muted-foreground max-w-md mx-auto">
-          ค้นหาคำตอบสำหรับคำถามทั่วไปเกี่ยวกับการใช้งานระบบ TicketX
-        </p>
-      </div>
+      <PageHeader
+        eyebrow="ศูนย์ช่วยเหลือลูกค้า"
+        title="ศูนย์ช่วยเหลือและคำถามที่พบบ่อย (Help Center)"
+        description="ค้นหาคำตอบสำหรับคำถามทั่วไปเกี่ยวกับการใช้งานระบบ TicketX"
+      />
 
       {/* FAQ Accordion */}
       <div className="space-y-3">

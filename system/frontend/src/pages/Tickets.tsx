@@ -49,6 +49,8 @@ const priorityTone = (value?: string): 'escalated' | 'warning' | 'information' |
   if (/critical|p1|urgent/i.test(value)) return 'escalated';
   if (/high|p2/i.test(value)) return 'warning';
   if (/medium|p3/i.test(value)) return 'information';
+  if (/low|p4/i.test(value)) return 'neutral';
+  if (/none|p5|feature/i.test(value)) return 'unavailable';
   return 'neutral';
 };
 

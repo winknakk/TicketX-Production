@@ -23,35 +23,35 @@ export function CustomerTicketCard({
   return (
     <button
       onClick={() => onSelect(ticket)}
-      className="group flex w-full flex-col gap-3 rounded-2xl border border-zinc-800 bg-zinc-900/90 p-4 sm:p-5 text-left transition-all hover:border-zinc-700 hover:bg-zinc-900 shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+      className="group flex w-full flex-col gap-3 rounded-xl border border-border bg-card p-4 sm:p-5 text-left transition-all hover:bg-muted shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
       aria-label={`ตั๋ว ${ticketRef}: ${ticket.subject}`}
     >
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <span className="font-mono text-xs font-semibold text-zinc-400">
+          <span className="font-mono text-xs font-semibold text-muted-foreground">
             {ticketRef}
           </span>
           {formattedDate && (
-            <span className="text-[11px] text-zinc-500">• {formattedDate}</span>
+            <span className="text-[11px] text-muted-foreground">• {formattedDate}</span>
           )}
         </div>
-        <CustomerStatusBadge status={ticket.status} size="sm" />
+        <CustomerStatusBadge status={ticket.status} />
       </div>
 
       <div>
-        <h4 className="text-sm sm:text-base font-semibold text-zinc-100 group-hover:text-indigo-300 transition-colors line-clamp-1">
+        <h4 className="text-sm sm:text-base font-semibold text-foreground group-hover:text-primary transition-colors line-clamp-1">
           {ticket.subject}
         </h4>
         {ticket.summary && (
-          <p className="mt-1 text-xs text-zinc-400 line-clamp-2 leading-relaxed">
+          <p className="mt-1 text-xs text-muted-foreground line-clamp-2 leading-relaxed">
             {ticket.summary}
           </p>
         )}
       </div>
 
-      <div className="flex items-center justify-between pt-1 text-xs text-zinc-500">
+      <div className="flex items-center justify-between pt-1 text-xs text-muted-foreground">
         <span>คลิกเพื่อดูความคืบหน้า</span>
-        <ChevronRight className="h-4 w-4 text-zinc-500 transition-transform group-hover:translate-x-0.5 group-hover:text-indigo-400" />
+        <ChevronRight className="h-4 w-4 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
       </div>
     </button>
   );

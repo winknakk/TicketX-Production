@@ -111,6 +111,25 @@ export class TicketStateMachine {
       [req.to, planeStatus, ticket.id, from]
     );
 
+    if ((updated.rowCount || 0) > 0 && req.to === "REOPENED") {
+      // Re-open bookkeeping (operator decision 2026-09-08, final): count the
+      // cycle and clear the finished timestamps. Priority and BOTH SLA
+      // clocks stay as they were — the same defect coming back means the
+      // original target still stands (and, if it has passed, the case is
+      // overdue). A different problem is filed as a new case with its own SLA.
+      await pool
+        .query(
+          `UPDATE tickets
+              SET reopened_count = COALESCE(reopened_count, 0) + 1,
+                  last_reopened_at = NOW(),
+                  resolved_at = NULL,
+                  closed_at = NULL
+            WHERE id = $1::integer`,
+          [ticket.id]
+        )
+        .catch((err) => logger.warn({ ticketId: ticket.id, error: err.message }, "Re-open bookkeeping failed"));
+    }
+
     if ((updated.rowCount || 0) === 0) {
       // Someone else transitioned this ticket between our read and write.
       logger.warn({ ticketId: ticket.id, from, to: req.to }, "Concurrent ticket transition lost the race");
@@ -200,22 +219,40 @@ export class TicketStateMachine {
   }
 
   /** Maps Plane's wider vocabulary onto the four states we store. */
+  /** The Plane label recorded in tickets.plane_status (engineering state, Plane's to own). */
   private normalisePlaneStatus(planeStatus: string): string | null {
-    switch (String(planeStatus || "").trim().toLowerCase()) {
+    switch (String(planeStatus || "").trim().toLowerCase().replace(/[\s_-]+/g, " ")) {
       case "backlog":
       case "todo":
       case "to do":
       case "unstarted":
         return "Backlog";
+      case "triaged":
+      case "triage":
+        return "Triaged";
       case "open":
       case "in progress":
-      case "in_progress":
       case "started":
-        return "Open";
+        return "In Progress";
+      case "test failed":
+        return "Test Failed";
+      case "waiting for customer":
+      case "waiting customer":
+        return "Waiting for Customer";
+      case "delivery to customer":
+      case "delivered":
+        return "Delivery to Customer";
+      case "re open":
+      case "reopen":
+      case "reopened":
+        return "Re-Open";
       case "done":
       case "complete":
       case "completed":
         return "Done";
+      case "close":
+      case "closed":
+        return "Close";
       case "cancelled":
       case "canceled":
         return "Cancelled";
