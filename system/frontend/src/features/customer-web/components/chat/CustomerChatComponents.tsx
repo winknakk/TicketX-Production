@@ -1,5 +1,12 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import type { CustomerChatEntry, CustomerChatMessage, CustomerMessageAttachment } from '../../types';
+import type {
+  CustomerChatEntry,
+  CustomerChatMessage,
+  CustomerMessageAttachment,
+  CustomerTicket,
+  CustomerCancellationState,
+  CustomerWorkflowState,
+} from '../../types';
 import {
   Sparkles,
   User,
@@ -13,6 +20,10 @@ import {
   AlertTriangle,
   Loader2,
   RotateCw,
+  Ticket,
+  CheckCircle2,
+  XCircle,
+  HelpCircle,
 } from 'lucide-react';
 
 /* ────────────────────────────── time ────────────────────────────── */
@@ -224,6 +235,364 @@ function AttachmentView({
   );
 }
 
+/* ────────────────────────── flow 5/6 cards ────────────────────────── */
+
+/**
+ * 1. Cancel Confirmation UI
+ * Distinct prompt with confirmation request, clear ticket ID, stable button IDs,
+ * idempotent state handling, and deterministic success/decline display.
+ */
+export function CancelConfirmationCard({
+  cancellationState,
+  activeTicket,
+  onConfirm,
+  onDecline,
+  isSending,
+}: {
+  cancellationState: CustomerCancellationState;
+  activeTicket: CustomerTicket | null;
+  onConfirm: () => void;
+  onDecline: () => void;
+  isSending?: boolean;
+}) {
+  if (cancellationState.status === 'IDLE') return null;
+
+  const ticketNumber =
+    cancellationState.ticketNumber ||
+    (activeTicket?.ticket_number ? String(activeTicket.ticket_number) : activeTicket?.ticket_id ? String(activeTicket.ticket_id) : activeTicket?.id ? String(activeTicket.id) : '');
+
+  return (
+    <div
+      id="card-cancel-confirmation"
+      data-testid="cancel-confirmation-card"
+      className="mx-auto my-3 max-w-lg rounded-2xl border border-amber-500/40 bg-amber-500/10 p-4 text-card-foreground shadow-sm animate-in fade-in slide-in-from-top-2"
+    >
+      <div className="flex items-start gap-3">
+        <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <h4 className="text-xs sm:text-sm font-semibold text-foreground">ยืนยันการขอยกเลิกตั๋ว</h4>
+            {ticketNumber && (
+              <span className="rounded bg-amber-500/20 px-2 py-0.5 text-[11px] font-mono font-bold text-amber-600 dark:text-amber-400">
+                #{ticketNumber}
+              </span>
+            )}
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
+            {cancellationState.status === 'PENDING'
+              ? `คุณต้องการยกเลิกคำขอแจ้งปัญหา #${ticketNumber} ใช่หรือไม่? การยกเลิกจะมีผลทันทีและไม่สามารถย้อนกลับได้ค่ะ`
+              : cancellationState.status === 'CONFIRMED'
+                ? `ตั๋ว #${ticketNumber} ถูกยกเลิกเรียบร้อยแล้วค่ะ`
+                : `ยกเลิกคำขอค่ะ ดำเนินการต่อสำหรับตั๋ว #${ticketNumber}`}
+          </p>
+
+          {cancellationState.error && (
+            <div className="mt-2 rounded-lg bg-rose-500/15 p-2 text-[11px] text-rose-500 font-medium">
+              {cancellationState.error}
+            </div>
+          )}
+
+          {cancellationState.status === 'PENDING' && (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                id="btn-confirm-cancel"
+                data-testid="btn-confirm-cancel"
+                disabled={isSending}
+                onClick={onConfirm}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white shadow-xs hover:bg-rose-700 disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
+              >
+                {isSending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <XCircle className="h-3.5 w-3.5" />}
+                <span>ยืนยันยกเลิกตั๋ว</span>
+              </button>
+              <button
+                type="button"
+                id="btn-decline-cancel"
+                data-testid="btn-decline-cancel"
+                disabled={isSending}
+                onClick={onDecline}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-muted disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              >
+                <span>ไม่ยกเลิก (ดำเนินการต่อ)</span>
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 5. Dev-CS Waiting State UI
+ * Shown when ticket status is WAITING_CUSTOMER
+ */
+export function WaitingForCustomerCard({
+  detail,
+  activeTicket,
+  onCloseCase,
+  onProvideInfo,
+  isSending,
+}: {
+  detail?: string;
+  activeTicket: CustomerTicket | null;
+  onCloseCase: () => void;
+  onProvideInfo: () => void;
+  isSending?: boolean;
+}) {
+  const ticketNumber = activeTicket?.ticket_number || activeTicket?.id || '';
+
+  return (
+    <div
+      id="card-waiting-customer"
+      data-testid="waiting-for-customer-card"
+      className="mx-auto my-3 max-w-lg rounded-2xl border border-indigo-500/40 bg-indigo-500/10 p-4 text-card-foreground shadow-sm animate-in fade-in"
+    >
+      <div className="flex items-start gap-3">
+        <HelpCircle className="mt-0.5 h-5 w-5 shrink-0 text-indigo-500" />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <h4 className="text-xs sm:text-sm font-semibold text-foreground">ทีมงานต้องการข้อมูลเพิ่มเติม</h4>
+            {ticketNumber && (
+              <span className="rounded bg-indigo-500/20 px-2 py-0.5 text-[11px] font-mono font-bold text-indigo-600 dark:text-indigo-400">
+                #{ticketNumber}
+              </span>
+            )}
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
+            {detail || 'ทีมงานหรือ Dev-CS ได้อัปเดตและกำลังรอคำตอบจากคุณ กรุณาตรวจสอบหรือตอบกลับเพื่อให้การดำเนินการต่อเนื่องค่ะ'}
+          </p>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              id="btn-waiting-close"
+              data-testid="btn-waiting-close"
+              disabled={isSending}
+              onClick={onCloseCase}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-xs hover:bg-emerald-700 disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+            >
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              <span>ปิดเคสเรียบร้อย</span>
+            </button>
+            <button
+              type="button"
+              id="btn-waiting-respond"
+              data-testid="btn-waiting-respond"
+              disabled={isSending}
+              onClick={onProvideInfo}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-muted disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            >
+              <span>ขอข้อมูลเพิ่ม / ปัญหาเดิม</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 2. Switch-ticket chips
+ * Explicit list of available tickets, selected visual indicator,
+ * idle/selecting/selected/failed states.
+ */
+export function SwitchTicketChips({
+  tickets,
+  activeTicket,
+  onSelectTicket,
+  onOpenNewCase,
+  disabled,
+}: {
+  tickets: CustomerTicket[];
+  activeTicket: CustomerTicket | null;
+  onSelectTicket: (ticket: CustomerTicket | null) => void;
+  onOpenNewCase?: () => void;
+  disabled?: boolean;
+}) {
+  if (!tickets || tickets.length === 0) return null;
+
+  const openTickets = tickets.filter(
+    (t) => !['CLOSED', 'CANCELLED'].includes(String(t.status || '').toUpperCase())
+  );
+  const closedTickets = tickets.filter((t) =>
+    ['CLOSED', 'CANCELLED'].includes(String(t.status || '').toUpperCase())
+  );
+
+  return (
+    <div className="flex flex-col gap-1.5 py-1 text-xs">
+      {/* Active Case Context Header */}
+      {activeTicket && (
+        <div
+          data-testid="active-case-context"
+          className="flex items-center gap-1.5 rounded-lg border border-primary/20 bg-primary/5 px-2.5 py-1 text-xs"
+        >
+          <span className="text-[11px] font-medium text-muted-foreground shrink-0">กำลังคุยเรื่อง:</span>
+          <span className="font-semibold text-primary truncate max-w-[240px]">
+            {activeTicket.subject || activeTicket.summary || activeTicket.ticket_number}
+          </span>
+          <span className="text-[10px] font-mono text-muted-foreground shrink-0">
+            ({activeTicket.ticket_number || `#${activeTicket.id}`})
+          </span>
+        </div>
+      )}
+
+      {/* Case Switch Chips Row */}
+      <div
+        data-testid="switch-ticket-chips"
+        className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5"
+        role="group"
+        aria-label="เปลี่ยนเรื่องหรือเลือกเคสที่ต้องการสนทนา"
+      >
+        <span className="shrink-0 text-[11px] font-medium text-muted-foreground flex items-center gap-1">
+          <Ticket className="h-3 w-3" />
+          <span>เปลี่ยนเรื่อง:</span>
+        </span>
+
+        <button
+          type="button"
+          id="chip-ticket-none"
+          data-testid="chip-ticket-none"
+          disabled={disabled}
+          onClick={() => onSelectTicket(null)}
+          className={`shrink-0 inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium transition-all ${
+            !activeTicket
+              ? 'bg-foreground text-background shadow-xs font-semibold'
+              : 'border border-border bg-card text-muted-foreground hover:text-foreground hover:bg-muted'
+          }`}
+        >
+          <span>ทั่วไป (ไม่ผูกตั๋ว)</span>
+        </button>
+
+        {/* Open Cases: Green Indicator */}
+        {openTickets.map((t) => {
+          const isSelected = String(activeTicket?.id) === String(t.id);
+          const ticketNum = t.ticket_number || t.ticket_id || `#${t.id}`;
+          const isWaiting = t.status?.toUpperCase() === 'WAITING_CUSTOMER';
+
+          return (
+            <button
+              key={t.id}
+              type="button"
+              id={`ticket-chip-${t.id}`}
+              data-testid={`ticket-chip-${t.id}`}
+              data-legacy-id={`chip-ticket-${t.id}`}
+              disabled={disabled}
+              onClick={() => onSelectTicket(t)}
+              title={t.subject || t.summary}
+              className={`shrink-0 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium transition-all ${
+                isSelected
+                  ? 'bg-primary text-primary-foreground shadow-xs font-bold'
+                  : 'border border-border bg-card text-foreground hover:bg-muted hover:border-primary/40'
+              }`}
+            >
+              <span className="h-2 w-2 rounded-full bg-emerald-500 shrink-0" title="เปิดอยู่ (Open)" />
+              <span className="font-mono">{ticketNum}</span>
+              {t.subject && <span className="truncate max-w-[100px] text-[10px] opacity-80">{t.subject}</span>}
+              {isWaiting && (
+                <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-ping" title="รอข้อมูลจากคุณ" />
+              )}
+              {isSelected && <CheckCircle2 className="h-3 w-3 text-current shrink-0" />}
+            </button>
+          );
+        })}
+
+        {/* Closed Cases: Muted Indicator, Disabled/Read-only */}
+        {closedTickets.map((t) => {
+          const ticketNum = t.ticket_number || t.ticket_id || `#${t.id}`;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              id={`ticket-chip-${t.id}`}
+              data-testid={`ticket-chip-${t.id}`}
+              disabled={true}
+              title="เคสนี้ปิดเรียบร้อยแล้ว (ไม่สามารถส่งข้อความเข้าเคสที่ปิดแล้วได้)"
+              className="shrink-0 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium opacity-60 cursor-not-allowed bg-muted/40 border border-dashed border-border text-muted-foreground"
+            >
+              <span className="h-2 w-2 rounded-full bg-neutral-400 shrink-0" title="ปิดแล้ว (Closed)" />
+              <span className="font-mono">{ticketNum}</span>
+              <span className="text-[10px]">(ปิดแล้ว)</span>
+            </button>
+          );
+        })}
+
+        {/* New Case Button */}
+        <button
+          type="button"
+          id="chip-ticket-new"
+          data-testid="chip-ticket-new"
+          disabled={disabled}
+          onClick={() => {
+            if (onOpenNewCase) {
+              onOpenNewCase();
+            } else {
+              onSelectTicket(null);
+            }
+          }}
+          className="shrink-0 inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium border border-dashed border-primary/60 text-primary hover:bg-primary/10 transition-all"
+        >
+          <Plus className="h-3 w-3" />
+          <span>+ แจ้งปัญหาใหม่</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 3. Active-ticket indicator
+ * Compact header view showing currently active ticket, status, and quick switch action.
+ */
+export function ActiveTicketIndicator({
+  activeTicket,
+  onClear,
+}: {
+  activeTicket: CustomerTicket | null;
+  onClear?: () => void;
+}) {
+  if (!activeTicket) return null;
+
+  const ticketNum = activeTicket.ticket_number || activeTicket.ticket_id || `#${activeTicket.id}`;
+  const status = activeTicket.status?.toUpperCase() || 'OPEN';
+  const isWaiting = status === 'WAITING_CUSTOMER';
+
+  return (
+    <div
+      id="active-ticket-indicator"
+      data-testid="active-ticket-indicator"
+      className="inline-flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-2.5 py-1 text-xs"
+    >
+      <Ticket className="h-3.5 w-3.5 text-primary shrink-0" />
+      <div className="flex items-center gap-1.5 min-w-0">
+        <span className="font-mono font-bold text-primary">{ticketNum}</span>
+        <span className="truncate max-w-[120px] sm:max-w-[180px] text-[11px] text-muted-foreground">
+          {activeTicket.subject || activeTicket.summary}
+        </span>
+        <span
+          className={`shrink-0 rounded-full px-1.5 py-0.2 text-[10px] font-semibold ${
+            isWaiting
+              ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400'
+              : 'bg-primary/20 text-primary'
+          }`}
+        >
+          {status}
+        </span>
+      </div>
+      {onClear && (
+        <button
+          type="button"
+          onClick={onClear}
+          title="ยกเลิกการผูกเคสนี้"
+          className="rounded p-0.5 text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
+        >
+          <X className="h-3 w-3" />
+        </button>
+      )}
+    </div>
+  );
+}
+
 /* ────────────────────────────── bubbles ────────────────────────────── */
 
 function SystemNoticeRow({ text, tone }: { text: string; tone: 'info' | 'warning' | 'error' }) {
@@ -377,6 +746,14 @@ export function CustomerChatStream({
   onRetry,
   pendingAction,
   isSending,
+  cancellationState,
+  activeTicket,
+  onConfirmCancel,
+  onDeclineCancel,
+  customerWorkflowState,
+  waitingDetail,
+  onCloseWaiting,
+  onRespondWaiting,
 }: {
   entries: CustomerChatEntry[];
   isTyping: boolean;
@@ -386,13 +763,21 @@ export function CustomerChatStream({
   /** The action value currently being sent, if any. */
   pendingAction?: string | null;
   isSending?: boolean;
+  cancellationState?: CustomerCancellationState;
+  activeTicket?: CustomerTicket | null;
+  onConfirmCancel?: () => void;
+  onDeclineCancel?: () => void;
+  customerWorkflowState?: CustomerWorkflowState;
+  waitingDetail?: string;
+  onCloseWaiting?: () => void;
+  onRespondWaiting?: () => void;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [lightbox, setLightbox] = useState<CustomerMessageAttachment | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [entries, isTyping]);
+  }, [entries, isTyping, cancellationState?.status, customerWorkflowState]);
 
   const openImage = useCallback((a: CustomerMessageAttachment) => setLightbox(a), []);
 
@@ -413,6 +798,28 @@ export function CustomerChatStream({
               <span>กำลังเชื่อมต่อใหม่...</span>
             </div>
           </div>
+        )}
+
+        {/* Cancellation Flow Card */}
+        {cancellationState && cancellationState.status === 'PENDING' && onConfirmCancel && onDeclineCancel && (
+          <CancelConfirmationCard
+            cancellationState={cancellationState}
+            activeTicket={activeTicket ?? null}
+            onConfirm={onConfirmCancel}
+            onDecline={onDeclineCancel}
+            isSending={isSending}
+          />
+        )}
+
+        {/* Waiting For Customer Card */}
+        {customerWorkflowState === 'WAITING_FOR_CUSTOMER' && onCloseWaiting && onRespondWaiting && (
+          <WaitingForCustomerCard
+            detail={waitingDetail}
+            activeTicket={activeTicket ?? null}
+            onCloseCase={onCloseWaiting}
+            onProvideInfo={onRespondWaiting}
+            isSending={isSending}
+          />
         )}
 
         {entries.length === 0 ? (
@@ -483,12 +890,18 @@ export function CustomerChatComposer({
   disabled,
   quickActions,
   onSelectAction,
+  activeTicket,
+  availableTickets,
+  onSelectTicket,
 }: {
   onSendMessage: (text: string, files?: File[]) => Promise<void>;
   isSending: boolean;
   disabled?: boolean;
   quickActions?: Array<{ label: string; value: string; style?: string }>;
   onSelectAction?: (val: string) => void;
+  activeTicket?: CustomerTicket | null;
+  availableTickets?: CustomerTicket[];
+  onSelectTicket?: (ticket: CustomerTicket | null) => void;
 }) {
   const [text, setText] = useState('');
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
@@ -574,12 +987,26 @@ export function CustomerChatComposer({
   return (
     <form onSubmit={handleSubmit} className="border-t border-border bg-background/95 p-3 sm:p-4">
       <div className="max-w-3xl mx-auto w-full">
+        {availableTickets && availableTickets.length > 0 && onSelectTicket && (
+          <div className="mb-2 border-b border-border/40 pb-1.5">
+            <SwitchTicketChips
+              tickets={availableTickets}
+              activeTicket={activeTicket ?? null}
+              onSelectTicket={onSelectTicket}
+              onOpenNewCase={() => onSelectAction?.('+ แจ้งปัญหาใหม่')}
+              disabled={disabled || isSending}
+            />
+          </div>
+        )}
+
         {quickActions && quickActions.length > 0 && (
           <div className="mb-2.5 flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
             {quickActions.map((action) => (
               <button
                 key={action.value}
                 type="button"
+                id={`btn-quick-action-${action.value}`}
+                data-testid={`btn-quick-action-${action.value}`}
                 onClick={() => onSelectAction?.(action.value)}
                 disabled={disabled || isSending}
                 className={`shrink-0 inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-semibold shadow-2xs transition-all active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 disabled:cursor-not-allowed ${
@@ -660,6 +1087,8 @@ export function CustomerChatComposer({
           </div>
 
           <textarea
+            id="composer-input"
+            data-testid="composer-input"
             rows={1}
             value={text}
             disabled={disabled}
@@ -673,6 +1102,8 @@ export function CustomerChatComposer({
           <div className="p-2 shrink-0">
             <button
               type="submit"
+              id="btn-send-message"
+              data-testid="btn-send-message"
               disabled={(!text.trim() && attachedFiles.length === 0) || isSending || disabled}
               className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-primary-foreground transition-all hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary shadow-xs"
               aria-label="ส่งข้อความ"

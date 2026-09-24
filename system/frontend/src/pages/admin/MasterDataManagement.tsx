@@ -79,10 +79,18 @@ export function MasterDataManagement() {
   const [selectedCustomerId, setSelectedCustomerId] = useState<number | null>(null);
 
   // Modals state
+  const [showAddProjectModal, setShowAddProjectModal] = useState(false);
   const [showAddCustomerModal, setShowAddCustomerModal] = useState(false);
   const [showAddIdentityModal, setShowAddIdentityModal] = useState(false);
 
   // Form States
+  const [newProject, setNewProject] = useState({
+    name: '',
+    company_id: 1,
+    project_type: 'Support Project',
+    environment: 'Production',
+    knowledge_base_tag: '',
+  });
   const [newCustomer, setNewCustomer] = useState({
     project_id: 1,
     company_name: '',
@@ -191,6 +199,33 @@ export function MasterDataManagement() {
     fetchData();
   }, []);
 
+  // Add Project Submit
+  const handleAddProjectSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const res = await apiFetch(`${apiBaseUrl}/api/v1/admin/master-data/projects`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newProject),
+      }).then((r) => r.json());
+
+      if (res.success && res.project) {
+        setProjects((prev) => [...prev, res.project]);
+        setShowAddProjectModal(false);
+        setNewProject({
+          name: '',
+          company_id: 1,
+          project_type: 'Support Project',
+          environment: 'Production',
+          knowledge_base_tag: '',
+        });
+        fetchData();
+      }
+    } catch (err) {
+      console.error('Error creating project:', err);
+    }
+  };
+
   // Add Customer Submit
   const handleAddCustomerSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -286,6 +321,12 @@ export function MasterDataManagement() {
               <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
               Sync DB
             </Button>
+            {activeTab === 'projects' && (
+              <Button onClick={() => setShowAddProjectModal(true)}>
+                <Plus className="h-4 w-4" />
+                Add Project
+              </Button>
+            )}
             {activeTab === 'customers' && (
               <Button onClick={() => setShowAddCustomerModal(true)}>
                 <Plus className="h-4 w-4" />
@@ -452,11 +493,19 @@ export function MasterDataManagement() {
           ) : error && projects.length === 0 ? (
             <DataState kind="error" title="Projects unavailable" description={error} />
           ) : filteredProjects.length === 0 ? (
-            <DataState
-              kind="empty"
-              title={search ? 'No matching projects' : 'No projects found'}
-              description="No project workspace records exist in PostgreSQL database."
-            />
+            <div className="space-y-4">
+              <DataState
+                kind="empty"
+                title={search ? 'No matching projects' : 'No projects found'}
+                description="No project workspace records exist in PostgreSQL database."
+              />
+              <div className="flex justify-center">
+                <Button onClick={() => setShowAddProjectModal(true)}>
+                  <Plus className="h-4 w-4" />
+                  Add New Project
+                </Button>
+              </div>
+            </div>
           ) : (
             <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
               {filteredProjects.map((project) => (
@@ -963,6 +1012,86 @@ export function MasterDataManagement() {
                   Cancel
                 </Button>
                 <Button type="submit">Save Mapping</Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal 3: Add Project Workspace Modal */}
+      {showAddProjectModal && (
+        <div className="fixed inset-0 bg-background/80 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-card border border-border rounded-xl p-6 w-full max-w-md shadow-xl space-y-4">
+            <h2 className="text-lg font-bold text-foreground">Create New Project Workspace</h2>
+            <form onSubmit={handleAddProjectSubmit} className="space-y-4">
+              <div>
+                <label className="block text-sm font-semibold text-foreground mb-1">Project Name</label>
+                <input
+                  type="text"
+                  required
+                  value={newProject.name}
+                  onChange={(e) => setNewProject({ ...newProject, name: e.target.value })}
+                  className="field-control w-full"
+                  placeholder="e.g. Avalant CRM Support"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-foreground mb-1">Project Type</label>
+                <select
+                  value={newProject.project_type}
+                  onChange={(e) => setNewProject({ ...newProject, project_type: e.target.value })}
+                  className="field-control w-full"
+                >
+                  <option value="Support Project">Support Project</option>
+                  <option value="Demo Project">Demo Project</option>
+                  <option value="Implementation Project">Implementation Project</option>
+                  <option value="Internal Project">Internal Project</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-foreground mb-1">Environment</label>
+                <input
+                  type="text"
+                  required
+                  value={newProject.environment}
+                  onChange={(e) => setNewProject({ ...newProject, environment: e.target.value })}
+                  className="field-control w-full"
+                  placeholder="e.g. Production, Staging, Avalant 24/7 Production"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-foreground mb-1">Company / Tenant ID</label>
+                <input
+                  type="number"
+                  min="1"
+                  required
+                  value={newProject.company_id}
+                  onChange={(e) => setNewProject({ ...newProject, company_id: Number(e.target.value) || 1 })}
+                  className="field-control w-full"
+                  placeholder="1"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-foreground mb-1">Knowledge Base Tag (Optional)</label>
+                <input
+                  type="text"
+                  value={newProject.knowledge_base_tag}
+                  onChange={(e) => setNewProject({ ...newProject, knowledge_base_tag: e.target.value })}
+                  className="field-control w-full"
+                  placeholder="e.g. project_crm (defaults to project_<id>)"
+                />
+                <p className="text-[11px] text-muted-foreground mt-1">Used for MCP knowledge base doc scoping</p>
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <Button type="button" variant="secondary" onClick={() => setShowAddProjectModal(false)}>
+                  Cancel
+                </Button>
+                <Button type="submit">Create Project</Button>
               </div>
             </form>
           </div>

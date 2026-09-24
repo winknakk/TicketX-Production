@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, CheckCircle2, Clock3, RefreshCw, ShieldAlert, Timer } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Clock3, Play, RefreshCw, ShieldAlert, SlidersHorizontal, Timer, X } from 'lucide-react';
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { apiFetch } from '../lib/apiFetch';
 import { useProject } from '../context/ProjectContext';
 import { Button, DataState, LastUpdated, PageHeader, Section, StatusBadge } from '../components/ui/Primitives';
 
-interface SlaCenterProps { apiBaseUrl: string; onNavigate?: (tab: 'tickets') => void; }
+interface SlaCenterProps { apiBaseUrl: string; onNavigate?: (tab: 'tickets') => void; showToast?: (message: string, type?: 'success' | 'error') => void; }
 
 type Priority = 'Urgent' | 'High' | 'Medium' | 'Low' | 'None';
 interface BoardRow {
@@ -28,7 +28,19 @@ interface Overview {
   resolutionByPriority: { priority: string; count: number; avgHours: number }[];
   recent: { kind: string; at: string; ticket_number: string | null; priority: string | null; ref: string; status: string | null }[];
   engine: { enabled: boolean; running: boolean; intervalMs: number; lastRunAt: string | null; nextRunAt: string | null; lastRunError: string | null };
+  /** Added by the route: whether this session may use the control panel. */
+  viewer?: { canControl: boolean; writesAllowed: boolean };
 }
+
+// ---- control panel (super_admin only) ----
+interface CadencePhase { phase: string; slot: number; slotKey: string; nextBoundaryAt: string; claimed: boolean; predictedDeliveryAt: string | null; interval: { every: number; unit: string } }
+interface Inspect {
+  ticket: { id: number; ticketNumber: string | null; subject: string | null; status: string; planeStatus: string | null; priority: Priority; channel: string | null; customerName: string | null; customerRef: string | null; createdAt: string };
+  sla: { firstResponseAt: string | null; responseDueAt: string | null; responseMet: boolean | null; dueAt: string | null };
+  eligibility: { checks: { key: string; ok: boolean; label: string; detail: string }[] };
+  cadence: { dev: CadencePhase | null; user: CadencePhase | null };
+}
+interface ActionResult { id: number; at: Date; title: string; ok: boolean; lines: string[] }
 
 const PRIORITY_ORDER: Priority[] = ['Urgent', 'High', 'Medium', 'Low', 'None'];
 const priorityTone = (p?: string): 'escalated' | 'warning' | 'information' | 'neutral' | 'unavailable' => {
@@ -62,9 +74,52 @@ const intervalLabel = (i: { every: number; unit: string } | null) => !i ? 'On de
 const FEED_LABEL: Record<string, string> = {
   dev_reminder: 'Dev reminder', customer_update: 'Customer update (LINE)', urgent_email: 'Urgent alert → Dev', done_email: 'Done email → customer', reminder_email: 'Reminder email → Dev',
 };
+const PHASE_LABEL: Record<string, string> = { due_now: 'due on the next pass', slot_sent: 'this slot already sent', missed_boundary: 'boundary missed (outside catch-up grace)', waiting_first_boundary: 'waiting for the first boundary' };
+const REASON_LABEL: Record<string, string> = {
+  TICKET_NOT_FOUND: 'Ticket not found', MINUTES_OUT_OF_RANGE: 'Minutes must be between 1 and 1440', WEBHOOK_NOT_CONFIGURED: 'SLA_NOTIFICATION_FLOW_WEBHOOK_URL is not configured',
+  NO_DEV_RECIPIENT: 'No developer email for this project', NO_CONVERSATION: 'Ticket has no conversation', HUMAN_OWNS_THREAD: 'A human agent owns this conversation, so the AI does not message the customer',
+  NOT_LINE: 'Customer is not on LINE', NO_CHANGE: 'Already in that state, nothing sent', INVALID_TRANSITION: 'That status change is not allowed from the current status', SUPER_ADMIN_REQUIRED: 'super_admin session required', DB_ERROR: 'Database error',
+};
 
-export function SlaCenter({ apiBaseUrl, onNavigate }: SlaCenterProps) {
+/** Turns a console API response into readable result lines. */
+function describeResult(title: string, body: any): ActionResult {
+  const d = body?.data ?? {};
+  const ok = body?.success === true && d.ok !== false;
+  const lines: string[] = [];
+  if (!ok) {
+    const reason = d.reason || body?.code || null;
+    lines.push(REASON_LABEL[reason] || body?.error || reason || 'Request failed');
+    if (d.detail) lines.push(String(d.detail));
+    if (d.error) lines.push(String(d.error));
+  } else if ('evaluated' in d) {
+    if (d.alreadyRunning) lines.push('A pass is already running, nothing started');
+    else if (d.skippedLocked) lines.push('Skipped: another runner holds the lock');
+    else {
+      lines.push(`${d.dryRun ? 'Dry run: ' : ''}${d.evaluated} open ticket${d.evaluated === 1 ? '' : 's'} evaluated`);
+      lines.push(`Dev reminders ${d.dryRun ? 'that would send' : 'sent'}: ${d.devAlertsSent} · customer updates: ${d.userUpdatesSent}`);
+      if (d.awaitingEvaluated) lines.push(`Awaiting-confirmation tickets: ${d.awaitingEvaluated} · nudges ${d.nudgesSent} · auto-closed ${d.autoClosed}`);
+    }
+  } else if ('kind' in d && 'sent' in d) {
+    lines.push(d.sent ? `${d.kind === 'dev' ? 'Developer reminder email' : 'Customer LINE update'} sent for ${d.ticketNumber || 'ticket'}` : `Not sent (${d.reason || 'slot already used'})`);
+    if (d.key) lines.push(`slot ${d.key}`);
+  } else if ('notified' in d) {
+    lines.push(`${d.ticket?.ticket_number || 'Ticket'}: ${d.previousStatus} → ${d.ticket?.status}`);
+    lines.push(d.notified ? 'Customer received the "please test the fix" LINE message with confirm chips' : `Customer not messaged${d.notifyError ? ': ' + d.notifyError : ''}`);
+    lines.push('Plane card follows through the outbox within about 10 s when the ticket is linked');
+  } else if ('previousStatus' in d) {
+    lines.push(`${d.ticket?.ticket_number || 'Ticket'}: ${d.previousStatus} → ${d.ticket?.status} (no customer message)`);
+  } else if ('minutes' in d) {
+    lines.push(`Clock shifted back ${d.minutes} min · created ${fmtBkk(d.after?.created_at)} · due ${fmtBkk(d.after?.due_date)}`);
+  } else if ('deleted' in d) {
+    const c = d.deleted;
+    lines.push(c && typeof c === 'object' ? Object.entries(c).map(([k, v]) => `${k}: ${v}`).join(' · ') : 'Test data cleared');
+  } else lines.push('Done');
+  return { id: Date.now() + Math.random(), at: new Date(), title, ok, lines };
+}
+
+export function SlaCenter({ apiBaseUrl, onNavigate, showToast }: SlaCenterProps) {
   const { activeProjectId } = useProject();
+  const isSuperAdmin = (localStorage.getItem('user_role') || '') === 'super_admin';
   const [data, setData] = useState<Overview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -72,6 +127,13 @@ export function SlaCenter({ apiBaseUrl, onNavigate }: SlaCenterProps) {
   const [offsetMs, setOffsetMs] = useState(0);
   const [now, setNow] = useState(() => Date.now());
   const [priorityFilter, setPriorityFilter] = useState<'all' | Priority>('all');
+  // control panel
+  const [controlRef, setControlRef] = useState<string | null>(null);
+  const [inspect, setInspect] = useState<Inspect | null>(null);
+  const [inspectError, setInspectError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [shiftMinutes, setShiftMinutes] = useState(61);
+  const [results, setResults] = useState<ActionResult[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
@@ -88,9 +150,39 @@ export function SlaCenter({ apiBaseUrl, onNavigate }: SlaCenterProps) {
     } finally { setLoading(false); }
   }, [activeProjectId, apiBaseUrl]);
 
+  const loadInspect = useCallback(async (ref: string) => {
+    setInspectError(null);
+    try {
+      const response = await apiFetch(`${apiBaseUrl}/api/v1/admin/sla/tickets/${encodeURIComponent(ref)}`);
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body?.error || `Ticket inspection returned ${response.status}`);
+      setInspect(body.data ?? body);
+    } catch (reason) { setInspectError(reason instanceof Error ? reason.message : 'Ticket inspection failed'); }
+  }, [apiBaseUrl]);
+
+  /** Runs one control action, records a readable result, and refreshes the board. */
+  const act = useCallback(async (key: string, title: string, path: string, payload: Record<string, unknown>) => {
+    if (busy) return;
+    setBusy(key);
+    try {
+      const response = await apiFetch(`${apiBaseUrl}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: true, ...payload }) });
+      const body = await response.json().catch(() => ({ success: false, error: `HTTP ${response.status}` }));
+      const result = describeResult(title, body);
+      setResults((prev) => [result, ...prev].slice(0, 30));
+      showToast?.(`${title}: ${result.lines[0]}`, result.ok ? 'success' : 'error');
+      await load();
+      if (controlRef) await loadInspect(controlRef);
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : 'Request failed';
+      setResults((prev) => [{ id: Date.now(), at: new Date(), title, ok: false, lines: [message] }, ...prev].slice(0, 30));
+      showToast?.(`${title}: ${message}`, 'error');
+    } finally { setBusy(null); }
+  }, [apiBaseUrl, busy, controlRef, load, loadInspect, showToast]);
+
   useEffect(() => { load(); }, [load]);
   useEffect(() => { const t = setInterval(load, 30_000); return () => clearInterval(t); }, [load]);
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
+  useEffect(() => { if (controlRef) { setInspect(null); loadInspect(controlRef); } }, [controlRef, loadInspect]);
   const serverNow = now + offsetMs;
 
   const board = useMemo(() => {
@@ -111,6 +203,8 @@ export function SlaCenter({ apiBaseUrl, onNavigate }: SlaCenterProps) {
   if (!data) return null;
 
   const { kpis, engine } = data;
+  const canControl = isSuperAdmin && data.viewer?.canControl === true;
+  const writesAllowed = data.viewer?.writesAllowed !== false;
   const pct = (v: { met: number; total: number; rate: number } | null) => v ? `${Math.round(v.rate * 100)}%` : '—';
   const tiles = [
     { label: 'Open within SLA', value: kpis.withinSla, detail: `${kpis.open} open ticket${kpis.open === 1 ? '' : 's'} in scope`, icon: CheckCircle2, tone: 'text-emerald-600 dark:text-emerald-400' },
@@ -120,13 +214,15 @@ export function SlaCenter({ apiBaseUrl, onNavigate }: SlaCenterProps) {
   ];
   const engineTone = !engine.enabled ? 'unavailable' : engine.lastRunError ? 'error' : engine.running ? 'success' : 'warning';
   const engineText = !engine.enabled ? 'Cadence engine disabled' : engine.lastRunError ? 'Cadence engine error' : engine.running ? 'Cadence engine running' : 'Cadence engine stopped';
+  const ticketPath = (action: string) => `/api/v1/admin/sla/tickets/${encodeURIComponent(controlRef || '')}/${action}`;
+  const rowRef = (r: BoardRow) => r.ticketNumber || String(r.id);
 
   return (
     <div className="page-scroll space-y-6">
       <PageHeader
         eyebrow="Insights"
         title="SLA Center"
-        description="Live service-level health for the active workspace: what is about to breach, how the last 7 days went, and whether the reminder engine is doing its job. Read-only by design."
+        description={`Live service-level health for the active workspace: what is about to breach, how the last 7 days went, and whether the reminder engine is doing its job. ${canControl ? 'Controls are enabled for this super_admin session.' : 'Read-only for this role.'}`}
         actions={<><LastUpdated value={updatedAt} stale={!!error} /><Button variant="secondary" onClick={load} disabled={loading}><RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />Refresh</Button></>}
       />
 
@@ -158,14 +254,15 @@ export function SlaCenter({ apiBaseUrl, onNavigate }: SlaCenterProps) {
         {board.length === 0 ? <DataState compact kind="empty" title="No open tickets in scope" description="Nothing is waiting on a resolution target right now." /> : (
           <div className="mt-5 overflow-x-auto">
             <table className="w-full text-sm">
-              <thead><tr><th>Ticket</th><th>Status</th><th>First response</th><th>Time to resolution</th><th>Next customer update</th><th>Owner</th><th className="text-right">Links</th></tr></thead>
+              <thead><tr><th>Ticket</th><th>Status</th><th>First response</th><th>Time to resolution</th><th>Next customer update</th><th>Owner</th><th className="text-right">{canControl ? 'Links · Control' : 'Links'}</th></tr></thead>
               <tbody>
                 {board.map((r) => {
                   const barTone = r.liveBreached ? 'bg-red-500' : (r.liveFraction ?? 1) < 0.25 ? 'bg-amber-500' : 'bg-emerald-500';
                   const width = r.liveFraction === null ? 0 : Math.round(r.liveFraction * 100);
                   const planeLink = r.plane?.workspaceSlug && r.plane?.projectId ? `https://projects.oneweb.tech/${r.plane.workspaceSlug}/projects/${r.plane.projectId}/issues/${r.plane.issueId}` : null;
+                  const selected = controlRef === rowRef(r);
                   return (
-                    <tr key={r.id}>
+                    <tr key={r.id} className={selected ? 'bg-primary/5' : ''}>
                       <td>
                         <div className="flex items-center gap-2"><StatusBadge tone={priorityTone(r.priority)}>{priorityGlyph[r.priority]} {r.priority}</StatusBadge><span className="font-semibold">{r.ticketNumber || `#${r.id}`}</span></div>
                         <p className="mt-1 max-w-[28rem] truncate text-xs text-muted-foreground" title={r.subject || ''}>{r.subject || '—'}</p>
@@ -190,6 +287,12 @@ export function SlaCenter({ apiBaseUrl, onNavigate }: SlaCenterProps) {
                       <td className="text-right whitespace-nowrap">
                         <button type="button" className="text-xs font-semibold text-primary hover:underline" onClick={() => onNavigate?.('tickets')}>Tickets</button>
                         {planeLink && <a className="ml-3 text-xs font-semibold text-primary hover:underline" href={planeLink} target="_blank" rel="noreferrer">Plane ↗</a>}
+                        {canControl && (
+                          <button type="button" onClick={() => setControlRef(selected ? null : rowRef(r))}
+                            className={`ml-3 inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-semibold transition ${selected ? 'border-primary bg-primary text-primary-foreground' : 'border-border hover:bg-muted'}`}>
+                            <SlidersHorizontal className="h-3 w-3" />Control
+                          </button>
+                        )}
                       </td>
                     </tr>
                   );
@@ -199,6 +302,106 @@ export function SlaCenter({ apiBaseUrl, onNavigate }: SlaCenterProps) {
           </div>
         )}
       </Section>
+
+      {canControl && (
+        <Section className="border-primary/30">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="flex items-center gap-2 font-bold">Control panel <StatusBadge tone="escalated">super_admin</StatusBadge></h2>
+              <p className="mt-1 text-sm text-muted-foreground">Every action runs immediately, is written to the ticket audit trail, and can send real emails or LINE messages. Results appear on the right.</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="secondary" disabled={!!busy} onClick={() => act('dry', 'Dry run', '/api/v1/admin/sla/run', { dryRun: true })}><Play className="h-4 w-4" />Dry run</Button>
+              <Button disabled={!!busy || !writesAllowed} onClick={() => act('run', 'Run cadence pass now', '/api/v1/admin/sla/run', {})}><Play className="h-4 w-4" />Run now</Button>
+            </div>
+          </div>
+          {!writesAllowed && <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-700 dark:text-amber-300"><AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />Write actions are disabled on this server (SLA_CONSOLE_ALLOW_WRITES). Dry run still works.</div>}
+
+          <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+            <div className="surface-inset min-w-0 rounded-xl p-4">
+              {!controlRef ? (
+                <DataState compact kind="empty" title="No ticket selected" description="Press Control on a row in the SLA clock to inspect it and run actions against it." />
+              ) : inspectError ? (
+                <DataState compact kind="error" title="Ticket inspection failed" description={inspectError} actionLabel="Retry" onAction={() => loadInspect(controlRef)} />
+              ) : !inspect ? (
+                <DataState compact kind="loading" title={`Inspecting ${controlRef}`} />
+              ) : (
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-base font-bold">{inspect.ticket.ticketNumber || `#${inspect.ticket.id}`}</span>
+                      <StatusBadge tone={priorityTone(inspect.ticket.priority)}>{priorityGlyph[inspect.ticket.priority]} {inspect.ticket.priority}</StatusBadge>
+                      <StatusBadge tone="neutral">{inspect.ticket.status}</StatusBadge>
+                      {inspect.ticket.planeStatus && <StatusBadge tone="information">Plane: {inspect.ticket.planeStatus}</StatusBadge>}
+                    </div>
+                    <button type="button" className="rounded-md p-1 text-muted-foreground hover:bg-muted" onClick={() => setControlRef(null)} aria-label="Close"><X className="h-4 w-4" /></button>
+                  </div>
+                  <p className="text-sm">{inspect.ticket.subject || '—'}</p>
+                  <div className="grid gap-x-6 gap-y-1 text-xs sm:grid-cols-2">
+                    <div><span className="text-muted-foreground">Customer</span> · {inspect.ticket.customerName || '—'} · {inspect.ticket.channel || '?'} {inspect.ticket.customerRef && <code className="rounded bg-muted px-1">{inspect.ticket.customerRef}</code>}</div>
+                    <div><span className="text-muted-foreground">Opened</span> · {fmtBkk(inspect.ticket.createdAt)}</div>
+                    <div><span className="text-muted-foreground">First response</span> · {inspect.sla.firstResponseAt ? `${fmtBkk(inspect.sla.firstResponseAt, false)} (${inspect.sla.responseMet ? 'met' : 'late'})` : `none · due ${fmtBkk(inspect.sla.responseDueAt, false)}`}</div>
+                    <div><span className="text-muted-foreground">Resolution</span> · {inspect.sla.dueAt ? `${fmtDuration(new Date(inspect.sla.dueAt).getTime() - serverNow)} · due ${fmtBkk(inspect.sla.dueAt)}` : 'no target'}</div>
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {([['Developer reminder', inspect.cadence.dev], ['Customer progress report', inspect.cadence.user]] as const).map(([label, c]) => (
+                      <div key={label} className="rounded-lg border border-border p-3 text-xs">
+                        <p className="font-semibold">{label}</p>
+                        {!c ? <p className="mt-1 text-muted-foreground">No automatic cadence for this priority.</p> : (
+                          <>
+                            <p className="mt-1 text-muted-foreground">{intervalLabel(c.interval)} · slot {c.slot} · {PHASE_LABEL[c.phase] || c.phase}</p>
+                            <p className="mt-1">Next boundary {fmtBkk(c.nextBoundaryAt)} · expected send {c.predictedDeliveryAt ? `in ${fmtDuration(new Date(c.predictedDeliveryAt).getTime() - serverNow)}` : 'engine stopped'}</p>
+                          </>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  <details className="text-xs">
+                    <summary className="cursor-pointer font-semibold">Eligibility checks ({inspect.eligibility.checks.filter((c) => c.ok).length}/{inspect.eligibility.checks.length} pass)</summary>
+                    <ul className="mt-2 space-y-1">
+                      {inspect.eligibility.checks.map((c) => <li key={c.key} className="flex gap-2"><span className={c.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}>{c.ok ? '✓' : '✗'}</span><span>{c.label} <span className="text-muted-foreground">· {c.detail}</span></span></li>)}
+                    </ul>
+                  </details>
+
+                  <div className="space-y-2 border-t border-border pt-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <input type="number" min={1} max={1440} value={shiftMinutes} onChange={(e) => setShiftMinutes(Number(e.target.value) || 61)}
+                        className="w-24 rounded-lg border border-border bg-background px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary" aria-label="Minutes to shift" />
+                      <span className="text-xs text-muted-foreground">min</span>
+                      <Button variant="secondary" disabled={!!busy || !writesAllowed} onClick={() => act('shift', `Shift clock back ${shiftMinutes} min`, ticketPath('shift-clock'), { minutes: shiftMinutes })}>Shift clock back</Button>
+                      <Button variant="secondary" disabled={!!busy || !writesAllowed} onClick={() => act('dev', 'Send developer reminder', ticketPath('force'), { kind: 'dev' })}>Send dev email</Button>
+                      <Button variant="secondary" disabled={!!busy || !writesAllowed} onClick={() => act('user', 'Send customer LINE update', ticketPath('force'), { kind: 'user' })}>Send LINE update</Button>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button disabled={!!busy || !writesAllowed} onClick={() => act('deliver', 'Deliver to customer', ticketPath('deliver'), {})}>Deliver to customer</Button>
+                      <Button variant="danger" disabled={!!busy || !writesAllowed} onClick={() => act('reset', 'Clear test data', ticketPath('reset'), {})}>Clear test data</Button>
+                      <Button variant="danger" disabled={!!busy || !writesAllowed} onClick={() => act('cancel', 'Cancel ticket', ticketPath('close'), { mode: 'cancelled' })}>Cancel ticket</Button>
+                      <Button variant="danger" disabled={!!busy || !writesAllowed} onClick={() => act('close', 'Close ticket', ticketPath('close'), { mode: 'closed' })}>Close ticket</Button>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">Deliver = RESOLVED + Plane "Delivery to Customer" + LINE "please test" message with confirm chips. Cancel and Close change the status silently. Shift clock rewinds the created and due timestamps (test data only).</p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="surface-inset min-w-0 rounded-xl p-4">
+              <div className="flex items-center justify-between"><p className="text-sm font-semibold">Action results</p>{results.length > 0 && <button type="button" className="text-xs text-muted-foreground hover:underline" onClick={() => setResults([])}>Clear</button>}</div>
+              {results.length === 0 ? <p className="mt-2 text-xs text-muted-foreground">Nothing run yet in this session.</p> : (
+                <ul className="mt-3 space-y-2">
+                  {results.map((r) => (
+                    <li key={r.id} className={`rounded-lg border p-3 text-xs ${r.ok ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-red-500/30 bg-red-500/5'}`}>
+                      <div className="flex items-center justify-between gap-2"><span className="font-semibold">{r.ok ? '✓' : '✗'} {r.title}</span><span className="text-muted-foreground">{fmtBkk(r.at.toISOString(), false)}</span></div>
+                      {r.lines.map((l, i) => <p key={i} className="mt-1 break-words text-muted-foreground">{l}</p>)}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </Section>
+      )}
 
       <div className="grid gap-5 lg:grid-cols-2">
         <Section>

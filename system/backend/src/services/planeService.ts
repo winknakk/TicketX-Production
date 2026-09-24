@@ -72,6 +72,14 @@ function normalizePlaneTargetDate(value: unknown): string | undefined {
 }
 
 import { sanitizeSensitiveData } from "../domain/diagnostic/DeveloperDiagnostic";
+import {
+  caseFollowUpService,
+  followUpCommentHtml,
+  planeWorkItemWebUrl,
+  relatedCaseMetadataValue,
+  relatedCaseSectionHtml,
+  type RelatedCaseInfo,
+} from "./CaseFollowUpService";
 
 export function formatDeveloperDiagnosticHtml(diag: any): string {
   if (!diag) return "";
@@ -395,10 +403,46 @@ interface CustomerImageAttachment {
   file_size: number;
 }
 
+/**
+ * After the new work item exists: a comment on the OLD work item pointing at
+ * it, and the follow-up request marked consumed. Best effort — the promotion
+ * has already succeeded and must not fail on this.
+ */
+async function linkFollowUpInPlane(
+  apiClient: { getWorkItem: (cfg: any, id: string) => Promise<any>; getProjectIdentifier: (cfg: any) => Promise<string | null>; addWorkItemComment: (cfg: any, id: string, html: string) => Promise<any> },
+  projectConfig: { workspaceSlug: string; planeProjectId: string },
+  relatedCase: RelatedCaseInfo | null,
+  followUpEventId: number | null,
+  child: { ticketId: number | null; ticketNumber: string; subject: string | null; planeIssueId: string }
+): Promise<void> {
+  if (followUpEventId) await caseFollowUpService.consume(followUpEventId, child.ticketId);
+  if (!relatedCase?.planeIssueId) return;
+  let sequenceLabel: string | null = null;
+  try {
+    const wi = await apiClient.getWorkItem(projectConfig, child.planeIssueId);
+    const identifier = await apiClient.getProjectIdentifier(projectConfig);
+    if (wi?.sequence_id) sequenceLabel = identifier ? `${identifier}-${wi.sequence_id}` : `#${wi.sequence_id}`;
+  } catch {
+    // The label is decoration; the number and the link still identify the case.
+  }
+  const html = followUpCommentHtml({
+    ticketNumber: child.ticketNumber,
+    sequenceLabel,
+    subject: child.subject,
+    url: planeWorkItemWebUrl(projectConfig.workspaceSlug, projectConfig.planeProjectId, child.planeIssueId),
+  });
+  try {
+    await apiClient.addWorkItemComment(projectConfig, relatedCase.planeIssueId, html);
+  } catch (err: any) {
+    console.warn(`[PlaneService] Could not comment the follow-up on ${relatedCase.ticketNumber}:`, err?.message || err);
+  }
+}
+
 export function buildPlaneWorkItemPayload(
   ticket: Record<string, any>,
   companyName = "Unknown",
-  labelIds?: string[]
+  labelIds?: string[],
+  relatedCase?: RelatedCaseInfo | null
 ): PlaneWorkItemPayload {
   const ticketNumber = String(
     ticket.ticket_number || ticket.ticket_id || ticket.id1 || ticket.id || "UNKNOWN"
@@ -441,6 +485,8 @@ export function buildPlaneWorkItemPayload(
     ["Priority", String(ticket.priority || priority)],
     ["HTTP status", httpStatus || ""],
     ["SLA target", dueDate || ""],
+    // Follow-up of a closed case (2026-09-18): number, Plane id and when it closed.
+    ["Related case", relatedCase ? relatedCaseMetadataValue(relatedCase) : ""],
   ].filter(([, value]) => value);
 
   const metadataHtml = metadata
@@ -484,6 +530,7 @@ export function buildPlaneWorkItemPayload(
 
   const summarySections = [
     mainReportContent,
+    relatedCase ? relatedCaseSectionHtml(relatedCase) : "",
     mediaHtml,
     runningSummary
       ? `<h3>Customer update history</h3><ul>${runningSummaryHtml}</ul>`
@@ -547,7 +594,7 @@ export function buildPlaneReopenBlockHtml(meta: {
   reopenedCount?: number | null;
   feedback?: string | null;
   now?: Date;
-}): { html: string; marker: string } {
+}): { html: string; marker: string; feedbackHtml: string; feedbackText: string } {
   const esc = (v: string) => v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const round = Number(meta.reopenedCount) > 0 ? Number(meta.reopenedCount) : 1;
   const marker = `\u{1F501} Re-Open #${round}`;
@@ -557,9 +604,10 @@ export function buildPlaneReopenBlockHtml(meta: {
     .replace(",", "");
   const suffix = meta.ticketNumber ? ` (${esc(String(meta.ticketNumber))})` : "";
   const feedback = String(meta.feedback || "").replace(/\s+/g, " ").trim();
-  const feedbackHtml = feedback ? `<p>อาการที่ลูกค้าแจ้ง: ${esc(feedback)}</p>` : "";
+  const feedbackText = feedback ? esc(feedback) : "";
+  const feedbackHtml = feedback ? `<p>อาการที่ลูกค้าแจ้ง: ${feedbackText}</p>` : "";
   const html = `<p><strong>${marker} · ${esc(when)} · ลูกค้าแจ้งว่าอาการเดิมยังไม่หาย${suffix}</strong></p>${feedbackHtml}<hr>`;
-  return { html, marker };
+  return { html, marker, feedbackHtml, feedbackText };
 }
 
 export function selectPlaneBacklogState(states: PlaneStateSummary[]): PlaneStateSummary | undefined {
@@ -1278,11 +1326,69 @@ export class PlaneService {
       }
     }
 
-    const payload = buildPlaneWorkItemPayload(ticketWithSource, companyName);
+    // Follow-up of a closed case (2026-09-18): the customer tapped
+    // [เปิดเคสใหม่จากเรื่องนี้]. The gate usually sets parent_ticket_id through
+    // the hub; when it did not, the edge's FOLLOW_UP_REQUESTED marker does.
+    // The related case is rendered into the work item and, after creation,
+    // commented on the old one. Never a reason to fail the promotion.
+    let relatedCase: RelatedCaseInfo | null = null;
+    let followUpEventId: number | null = null;
+    try {
+      const childId = Number(ticket.id || 0) || null;
+      let parentId = Number(ticket.parent_ticket_id || 0) || null;
+      if (ticket.conversation_id) {
+        const pending = await caseFollowUpService.pending(Number(ticket.conversation_id));
+        if (pending) {
+          followUpEventId = pending.eventId;
+          if (!parentId) {
+            parentId = pending.parentTicketId;
+            if (childId) await caseFollowUpService.setParent(childId, parentId);
+          }
+        }
+      }
+      if (parentId && parentId !== childId) {
+        const parent = await caseFollowUpService.loadParent(parentId);
+        if (parent) {
+          let sequenceLabel: string | null = null;
+          if (parent.plane_issue_id) {
+            try {
+              const wi = await this.apiClient.getWorkItem(projectConfig, parent.plane_issue_id);
+              const identifier = await this.apiClient.getProjectIdentifier(projectConfig);
+              if (wi?.sequence_id) sequenceLabel = identifier ? `${identifier}-${wi.sequence_id}` : `#${wi.sequence_id}`;
+            } catch {
+              // Label optional; number + link still identify the old case.
+            }
+          }
+          relatedCase = {
+            ticketId: parent.id,
+            ticketNumber: parent.ticket_number,
+            subject: parent.subject,
+            status: parent.status,
+            closedAt: parent.closed_at,
+            sequenceLabel,
+            planeIssueId: parent.plane_issue_id,
+            url: planeWorkItemWebUrl(parent.plane_workspace_slug || projectConfig.workspaceSlug, parent.plane_project_id || projectConfig.planeProjectId, parent.plane_issue_id),
+          };
+        }
+      }
+    } catch (err: any) {
+      console.warn("[PlaneService] Related-case lookup failed; promoting without the link:", err?.message || err);
+    }
+
+    const payload = buildPlaneWorkItemPayload(ticketWithSource, companyName, undefined, relatedCase);
 
     // Create Work Item in target Plane Project via PlaneApiClient
     const result = await this.apiClient.createWorkItem(projectConfig, payload);
     const planeIssueId = result.id;
+
+    if (relatedCase || followUpEventId) {
+      void linkFollowUpInPlane(this.apiClient, projectConfig, relatedCase, followUpEventId, {
+        ticketId: Number(ticket.id || 0) || null,
+        ticketNumber: String(ticket.ticket_number || lookupId || ""),
+        subject: ticket.subject ? String(ticket.subject) : null,
+        planeIssueId,
+      }).catch((err: any) => console.warn("[PlaneService] Follow-up link failed:", err?.message || err));
+    }
 
     // A LINE image is stored in TicketX immediately, before the debounced AI
     // request, so screenshots the customer sent before the ticket existed are
@@ -1393,6 +1499,14 @@ export class PlaneService {
       const payload: Record<string, unknown> = {};
       if (!currentDescription.includes(block.marker)) {
         payload.description_html = `${block.html}${currentDescription}`;
+      } else if (block.feedbackText && !currentDescription.includes(block.feedbackText)) {
+        // Same round already has its header (feedback arriving inside the
+        // 30-minute window): append the symptom line at the end of that
+        // round's block (before its <hr>), oldest first.
+        const hr = currentDescription.indexOf("<hr>", currentDescription.indexOf(block.marker));
+        if (hr >= 0) {
+          payload.description_html = `${currentDescription.slice(0, hr)}${block.feedbackHtml}${currentDescription.slice(hr)}`;
+        }
       }
       const labelId = await this.getOrCreatePlaneLabel(PLANE_REOPEN_LABEL, "#f97316", projectConfig);
       if (labelId && !existingLabels.includes(labelId)) {

@@ -46,6 +46,14 @@ import { AgentSessionQueueService } from "../services/AgentSessionQueueService";
 import { AgentSessionQueueWorker } from "../services/AgentSessionQueueWorker";
 import { LineTypingIndicatorService } from "../services/LineTypingIndicatorService";
 import { registerGitRepositoryRoutes } from "./routes/gitRepoRoutes";
+import { registerInternalNotesRoutes } from "./routes/internalNotes";
+import { registerDlqAdminRoutes } from "./routes/dlqAdmin";
+import { registerQueueHealthRoutes } from "./routes/queueHealth";
+import { registerTicketOpsRoutes } from "./routes/ticketOps";
+import { registerHandoffAuditRoutes } from "./routes/handoffAudit";
+import { registerAiObservabilityRoutes } from "./routes/aiObservability";
+import { registerAuditLogsRoutes } from "./routes/auditLogs";
+import { registerConversationIntelligenceRoutes } from "./routes/conversationIntelligence";
 import { SLAMatrixService } from "../services/SLAMatrixService";
 import { PolicyEngine } from "../policy/PolicyEngine";
 import { RuntimeContextResolver } from "../services/RuntimeContextResolver";
@@ -714,6 +722,15 @@ async function bootstrap() {
         const localConvId = resolvedConvId || await memoryService.ensureConversation(resolvedSenderRef, convProjectId, "WebChat");
         serverLogger.info(`[BullMQ Worker] Ensured local conversation (ID: ${localConvId}) for customer: ${resolvedSenderRef} in Project: ${convProjectId}`);
 
+        // SAFEGUARD: Block automated test suites from firing live PromptX / LLM workflows to save credits
+        if (
+          process.env.DISABLE_PROMPTX_WEBHOOK === "true" ||
+          (resolvedSenderRef && (resolvedSenderRef.startsWith("test_") || resolvedSenderRef.startsWith("f6")))
+        ) {
+          serverLogger.info(`[BullMQ Worker] BLOCKED PromptX Flow dispatch for test customer: ${resolvedSenderRef} (Credit Safeguard Active)`);
+          return { text: "Mock response: PromptX dispatch blocked for test run", recipientId: resolvedSenderRef, channel: "WebChat" };
+        }
+
         serverLogger.info(`[BullMQ Worker] Forwarding WebChat message to PromptX Flow: ${webhookUrl}`);
 
         const promptxPayload: any = {
@@ -971,7 +988,9 @@ async function bootstrap() {
 
   // 5. Start background outbox polling loop
   const outboxProcessor = new OutboxProcessor();
-  outboxProcessor.start(10000);
+  // 5 s: the production api/worker poll at 5 s; a slower dev backend never
+  // won a claim (ISSUE-072).
+  outboxProcessor.start(5000);
   planeReverseSyncPoller.start();
 
   fastify.addHook("onClose", async () => {
@@ -2204,7 +2223,7 @@ fastify.post("/api/v1/internal/tickets/:id/restore", async (request, reply) => {
     // the tickets_status_lifecycle_check constraint added in migration 040.
     const query = isNumeric
       ? `UPDATE tickets SET status = 'REOPENED', plane_status = 'Open', cancellation_reason = NULL, lifecycle_changed_at = NOW(), updated_at = NOW() WHERE id = $1 AND org_id = $2 RETURNING *`
-      : `UPDATE tickets SET status = 'REOPENED', plane_status = 'Open', cancellation_reason = NULL, lifecycle_changed_at = NOW(), updated_at = NOW() WHERE ticket_number = $1 AND org_id = $2 RETURNING *`;
+      : `UPDATE tickets SET status = 'REOPENED', plane_status = 'Open', cancellation_reason = NULL, lifecycle_changed_at = NOW(), updated_at = NOW() WHERE (ticket_number = $1 OR ticket_id = $1) AND org_id = $2 RETURNING *`;
     
     const queryArgs = [isNumeric ? parseInt(ticketIdStr, 10) : ticketIdStr, String(orgId)] as any[];
     const { rows } = await client.query(query, queryArgs);
@@ -3202,6 +3221,14 @@ fastify.register(registerAuthRoutes);
 fastify.register(registerMasterDataRoutes);
 fastify.register(registerAdminPlaneIntegrationRoutes);
 fastify.register(registerGitRepositoryRoutes);
+fastify.register(registerInternalNotesRoutes);
+fastify.register(registerDlqAdminRoutes);
+fastify.register(registerQueueHealthRoutes);
+fastify.register(registerTicketOpsRoutes);
+fastify.register(registerHandoffAuditRoutes);
+fastify.register(registerAiObservabilityRoutes);
+fastify.register(registerAuditLogsRoutes);
+fastify.register(registerConversationIntelligenceRoutes);
 registerPortalRoutes(fastify, { dbAdapter, slaService, emailService: emailNotificationService });
 const agentSessionQueueService = new AgentSessionQueueService(pool);
 // Shared by the LINE webhook route (phases A/B: receipt + after the ack) and

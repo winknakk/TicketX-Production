@@ -1,5 +1,9 @@
 import React, { useState } from 'react';
-import { CustomerChatStream, CustomerChatComposer } from '../components/chat/CustomerChatComponents';
+import {
+  CustomerChatStream,
+  CustomerChatComposer,
+  ActiveTicketIndicator,
+} from '../components/chat/CustomerChatComponents';
 import { CustomerTicketCard } from '../components/tickets/CustomerTicketComponents';
 import { CreateTicketDrawer } from '../components/tickets/CreateTicketDrawer';
 import { useCustomerChat } from '../chat/CustomerChatContext';
@@ -7,7 +11,6 @@ import { useCustomerTickets } from '../hooks/useCustomerTickets';
 import { useCustomerSession } from '../auth/CustomerSessionContext';
 import type { CustomerAppRoute, CustomerTicket } from '../types';
 import { Plus, Ticket, ArrowRight } from 'lucide-react';
-import { Button } from '../../../components/ui/Primitives';
 
 export function CustomerHomePage({
   onNavigate,
@@ -16,9 +19,29 @@ export function CustomerHomePage({
   onNavigate: (route: CustomerAppRoute) => void;
   onSelectTicket: (ticket: CustomerTicket) => void;
 }) {
-  const { isGuest, setIsSettingsOpen } = useCustomerSession();
-  const { entries, isTyping, isSending, isConnected, sendMessage, sendPostback, retrySend, pendingAction } =
-    useCustomerChat();
+  const { isGuest, setIsSettingsOpen, activeProjectId, availableProjects } = useCustomerSession();
+  const currentProjectName =
+    availableProjects.find((p) => String(p.id) === String(activeProjectId))?.name || null;
+  const {
+    entries,
+    isTyping,
+    isSending,
+    isConnected,
+    activeTicket,
+    availableTickets,
+    cancellationState,
+    customerWorkflowState,
+    waitingRequestDetail,
+    selectActiveTicket,
+    sendMessage,
+    sendPostback,
+    retrySend,
+    requestCancelTicket,
+    confirmCancelTicket,
+    declineCancelTicket,
+    respondToWaiting,
+    pendingAction,
+  } = useCustomerChat();
   const { tickets, createTicket } = useCustomerTickets();
   const [isCreateOpen, setIsCreateOpen] = useState(false);
 
@@ -32,6 +55,7 @@ export function CustomerHomePage({
     { label: "🚀 เริ่มใช้งาน", value: "start" },
     { label: "📝 แจ้งปัญหา", value: "report_issue", style: "primary" },
     { label: "🔍 ตรวจสอบสถานะ", value: "check_status" },
+    { label: "❌ ขอยกเลิกตั๋ว", value: "cancel_ticket" },
     { label: "✅ ปิดเคส", value: "close_case" },
     { label: "🔄 เปลี่ยนโปรเจกต์", value: "change_project" },
     { label: "🔗 เชื่อมใหม่", value: "connect_new" },
@@ -59,7 +83,15 @@ export function CustomerHomePage({
       setIsSettingsOpen(true);
       return;
     }
-    // Fallback for conversational action chips (e.g. start, close_case)
+    if (v === 'cancel_ticket' || v === 'ขอยกเลิกตั๋ว' || v === 'ยกเลิกตั๋ว') {
+      requestCancelTicket();
+      return;
+    }
+    if (v === 'close_case' || v === 'ปิดเคส') {
+      respondToWaiting('CLOSE');
+      return;
+    }
+    // Fallback for conversational action chips (e.g. start)
     sendPostback(value);
   };
 
@@ -72,20 +104,38 @@ export function CustomerHomePage({
       {/* Primary Hero: Support Conversation Area */}
       <div className="flex flex-1 flex-col h-full min-w-0 border-r border-border">
         <div className="flex items-center justify-between border-b border-border px-4 py-3 sm:px-6 bg-card/60 backdrop-blur-xs">
-          <div className="flex items-center gap-2.5">
-            <div className="h-2.5 w-2.5 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="text-xs font-semibold text-foreground">AI Support Agent (พร้อมให้บริการ)</span>
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-500 animate-pulse" />
+            <div className="min-w-0">
+              <span className="block text-xs font-semibold text-foreground truncate">
+                AI Support Agent (พร้อมให้บริการ)
+              </span>
+              {currentProjectName && (
+                <span className="block text-[11px] text-muted-foreground truncate" title={currentProjectName}>
+                  โปรเจกต์: {currentProjectName}
+                </span>
+              )}
+            </div>
           </div>
 
-          {!isGuest && (
-            <button
-              onClick={() => setIsCreateOpen(true)}
-              className="flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-muted transition-colors shadow-xs"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              <span>เปิดตั๋วใหม่</span>
-            </button>
-          )}
+          <div className="flex items-center gap-2.5">
+            {activeTicket && (
+              <ActiveTicketIndicator
+                activeTicket={activeTicket}
+                onClear={() => selectActiveTicket(null)}
+              />
+            )}
+
+            {!isGuest && (
+              <button
+                onClick={() => setIsCreateOpen(true)}
+                className="flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-muted transition-colors shadow-xs"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                <span>เปิดตั๋วใหม่</span>
+              </button>
+            )}
+          </div>
         </div>
 
         <CustomerChatStream
@@ -96,12 +146,23 @@ export function CustomerHomePage({
           onRetry={retrySend}
           pendingAction={pendingAction}
           isSending={isSending}
+          cancellationState={cancellationState}
+          activeTicket={activeTicket}
+          onConfirmCancel={confirmCancelTicket}
+          onDeclineCancel={declineCancelTicket}
+          customerWorkflowState={customerWorkflowState}
+          waitingDetail={waitingRequestDetail}
+          onCloseWaiting={() => respondToWaiting('CLOSE')}
+          onRespondWaiting={() => respondToWaiting('REPLY')}
         />
         <CustomerChatComposer
           onSendMessage={sendMessage}
           isSending={isSending}
           quickActions={LINE_QUICK_ACTIONS}
           onSelectAction={handleAction}
+          activeTicket={activeTicket}
+          availableTickets={availableTickets.length > 0 ? availableTickets : tickets}
+          onSelectTicket={selectActiveTicket}
         />
       </div>
 

@@ -25,8 +25,8 @@ function NavigationItems({
   const allowedTabsByRole: Record<string, string[]> = {
     customer: ['portal'],
     employee: ['dashboard', 'conversations', 'tickets', 'directory'],
-    admin: ['dashboard', 'conversations', 'tickets', 'directory', 'analytics', 'sla-center', 'plane-integrations', 'settings'],
-    super_admin: ['dashboard', 'conversations', 'tickets', 'directory', 'center-iam', 'master-data', 'traces', 'automation-flows', 'prompt-sessions', 'handoff-audit', 'analytics', 'sla-center', 'plane-integrations', 'settings']
+    admin: ['dashboard', 'conversations', 'tickets', 'directory', 'operations', 'analytics', 'sla-center', 'plane-integrations', 'audit-logs', 'settings'],
+    super_admin: ['dashboard', 'conversations', 'tickets', 'directory', 'center-iam', 'master-data', 'traces', 'operations', 'automation-flows', 'prompt-sessions', 'handoff-audit', 'analytics', 'sla-center', 'plane-integrations', 'audit-logs', 'settings']
   };
 
   const allowedTabs = allowedTabsByRole[userRole] || allowedTabsByRole.super_admin;

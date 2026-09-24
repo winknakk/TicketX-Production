@@ -60,6 +60,14 @@ interface DashboardProps {
 
 type OperationsCategory = 'all' | 'automation' | 'verification' | 'handoff';
 
+interface OperationsEventRecord {
+  id: string;
+  category: OperationsCategory;
+  text: string;
+  timestamp: string;
+  createdAt?: string;
+}
+
 export function Dashboard({
   apiBaseUrl,
   conversations,
@@ -79,17 +87,23 @@ export function Dashboard({
   const [claimingId, setClaimingId] = useState<string | null>(null);
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [tickets, setTickets] = useState<TicketRecord[]>([]);
+  const [operationsEvents, setOperationsEvents] = useState<OperationsEventRecord[]>([]);
+  const [operationsLoading, setOperationsLoading] = useState<boolean>(true);
 
   useEffect(() => {
     let isMounted = true;
     async function loadData() {
+      setOperationsLoading(true);
       try {
-        const [metricsRes, ticketsRes] = await Promise.allSettled([
+        const [metricsRes, ticketsRes, opsRes] = await Promise.allSettled([
           apiFetch(`${apiBaseUrl}/api/v1/admin/metrics?tenantId=${encodeURIComponent(activeProjectId)}`).then((r) =>
             r.ok ? r.json() : null
           ),
           apiFetch(`${apiBaseUrl}/api/admin/tickets?projectId=${encodeURIComponent(activeProjectId)}`).then((r) =>
             r.ok ? r.json() : []
+          ),
+          apiFetch(`${apiBaseUrl}/api/v1/admin/operations/events?projectId=${encodeURIComponent(activeProjectId)}`).then((r) =>
+            r.ok ? r.json() : { success: false, events: [] }
           ),
         ]);
         if (!isMounted) return;
@@ -99,13 +113,28 @@ export function Dashboard({
         if (ticketsRes.status === 'fulfilled' && Array.isArray(ticketsRes.value)) {
           setTickets(ticketsRes.value);
         }
+        if (opsRes.status === 'fulfilled' && opsRes.value?.events) {
+          setOperationsEvents(opsRes.value.events);
+        }
       } catch (e) {
-        console.error('Failed to load project metrics:', e);
+        console.error('Failed to load project metrics/operations:', e);
+      } finally {
+        if (isMounted) setOperationsLoading(false);
       }
     }
     loadData();
+
+    const handleRealtimeOpEvent = (e: Event) => {
+      const customEvent = e as CustomEvent<OperationsEventRecord>;
+      if (customEvent.detail) {
+        setOperationsEvents((prev) => [customEvent.detail, ...prev.slice(0, 29)]);
+      }
+    };
+    window.addEventListener('ticketx:operations-event', handleRealtimeOpEvent);
+
     return () => {
       isMounted = false;
+      window.removeEventListener('ticketx:operations-event', handleRealtimeOpEvent);
     };
   }, [activeProjectId, apiBaseUrl]);
 
@@ -153,36 +182,9 @@ export function Dashboard({
   );
 
   const liveOperationsEvents = useMemo(() => {
-    const events = [
-      {
-        id: 'op-1',
-        category: 'verification' as OperationsCategory,
-        text: 'AI verified ownership for ACME billing case',
-        timestamp: '2m ago',
-      },
-      {
-        id: 'op-2',
-        category: 'automation' as OperationsCategory,
-        text: 'Automation paused Stripe sync retry',
-        timestamp: '5m ago',
-      },
-      {
-        id: 'op-3',
-        category: 'handoff' as OperationsCategory,
-        text: `Human handoff claimed by ${operator.name}`,
-        timestamp: '9m ago',
-      },
-      {
-        id: 'op-4',
-        category: 'automation' as OperationsCategory,
-        text: 'Infrastructure check passed for LINE gateway',
-        timestamp: '12m ago',
-      },
-    ];
-
-    if (opsFilter === 'all') return events;
-    return events.filter((ev) => ev.category === opsFilter);
-  }, [opsFilter, operator.name]);
+    if (opsFilter === 'all') return operationsEvents;
+    return operationsEvents.filter((ev) => ev.category === opsFilter);
+  }, [opsFilter, operationsEvents]);
 
   const recentlyOpenedList = useMemo(() => {
     const list: string[] = [];
@@ -191,7 +193,7 @@ export function Dashboard({
       if (name && !list.includes(name)) list.push(name);
       if (list.length >= 3) break;
     }
-    return list.length ? list : ['Avalant Co.,Ltd.', 'Demo Co.'];
+    return list;
   }, [conversations]);
 
   return (
@@ -396,15 +398,37 @@ export function Dashboard({
 
         {/* Operational Log Feed */}
         <div className="space-y-2 pt-2">
-          {liveOperationsEvents.map((ev) => (
-            <div
-              key={ev.id}
-              className="flex items-center justify-between p-3 rounded-xl bg-muted/40 border border-border text-xs text-foreground"
-            >
-              <span>{ev.text}</span>
-              <span className="text-muted-foreground font-medium">{ev.timestamp}</span>
+          {operationsLoading ? (
+            <div className="flex items-center justify-center p-6 text-xs text-muted-foreground">
+              <RefreshCw className="h-4 w-4 animate-spin mr-2 text-primary" />
+              Loading operations feed from PostgreSQL…
             </div>
-          ))}
+          ) : liveOperationsEvents.length === 0 ? (
+            <div className="p-6 text-center text-xs text-muted-foreground border border-dashed border-border rounded-xl">
+              No recent operational events recorded for this project scope.
+            </div>
+          ) : (
+            liveOperationsEvents.map((ev) => (
+              <div
+                key={ev.id}
+                className="flex items-center justify-between p-3 rounded-xl bg-muted/40 border border-border text-xs text-foreground"
+              >
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`inline-block w-2 h-2 rounded-full ${
+                      ev.category === 'verification'
+                        ? 'bg-emerald-500'
+                        : ev.category === 'handoff'
+                        ? 'bg-amber-500'
+                        : 'bg-primary'
+                    }`}
+                  />
+                  <span>{ev.text}</span>
+                </div>
+                <span className="text-muted-foreground font-medium shrink-0 ml-2">{ev.timestamp}</span>
+              </div>
+            ))
+          )}
         </div>
       </div>
     </div>

@@ -2,6 +2,7 @@ import { TicketTitleGeneratorWorker } from "./TicketTitleGeneratorWorker";
 import { TicketSummaryWorker } from "./TicketSummaryWorker";
 import { DuplicateDetectorWorker } from "./DuplicateDetectorWorker";
 import { PlaneSyncWorker } from "./PlaneSyncWorker";
+import { KnowledgeGapWorker } from "./KnowledgeGapWorker";
 import { createLogger } from "../../observability/logger";
 
 const logger = createLogger("TicketWorkersManager");
@@ -11,6 +12,7 @@ export class TicketWorkersManager {
   private static summaryWorker: TicketSummaryWorker | null = null;
   private static duplicateWorker: DuplicateDetectorWorker | null = null;
   private static planeWorker: PlaneSyncWorker | null = null;
+  private static knowledgeGapWorker: KnowledgeGapWorker | null = null;
 
   static start(): void {
     if (this.titleWorker) {
@@ -23,6 +25,7 @@ export class TicketWorkersManager {
     this.summaryWorker = new TicketSummaryWorker();
     this.duplicateWorker = new DuplicateDetectorWorker();
     this.planeWorker = new PlaneSyncWorker();
+    this.knowledgeGapWorker = new KnowledgeGapWorker();
     logger.info("Ticket Intelligence Workers initialized successfully!");
   }
 
@@ -44,6 +47,20 @@ export class TicketWorkersManager {
       await this.planeWorker.close();
       this.planeWorker = null;
     }
+    if (this.knowledgeGapWorker) {
+      await this.knowledgeGapWorker.close();
+      this.knowledgeGapWorker = null;
+    }
     logger.info("Ticket Intelligence Workers shut down cleanly.");
+  }
+
+  static getStatus(): { titleWorker: string; summaryWorker: string; duplicateWorker: string; planeWorker: string; knowledgeGapWorker: string } {
+    return {
+      titleWorker: this.titleWorker !== null ? "ACTIVE" : "STOPPED",
+      summaryWorker: this.summaryWorker !== null ? "ACTIVE" : "STOPPED",
+      duplicateWorker: this.duplicateWorker !== null ? "ACTIVE" : "STOPPED",
+      planeWorker: this.planeWorker !== null ? "ACTIVE" : "STOPPED",
+      knowledgeGapWorker: this.knowledgeGapWorker !== null ? "ACTIVE" : "STOPPED",
+    };
   }
 }

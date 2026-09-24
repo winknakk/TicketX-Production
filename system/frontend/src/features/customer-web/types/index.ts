@@ -67,6 +67,14 @@ export interface CustomerChatMessage {
   id: string;
   /** Stable backend identity when the payload carries one; preferred for dedupe. */
   externalId?: string;
+  /**
+   * The conversation this message belongs to, when the server said so.
+   *
+   * A conversation belongs to exactly one project, so this is how a message
+   * meant for another project is recognised: outbound is also delivered to the
+   * identity-scoped `recipient:` room, and one identity spans several projects.
+   */
+  conversationId?: string;
   role: 'customer' | 'ai' | 'human' | 'operator';
   content: string;
   /**
@@ -80,9 +88,26 @@ export interface CustomerChatMessage {
   attachments?: CustomerMessageAttachment[];
   actions?: CustomerChatAction[];
   deliveryStatus?: CustomerMessageDelivery;
+  /** Active ticket context associated with this message */
+  activeTicketId?: number | string;
+  ticketNumber?: string;
   /** Set on an optimistic bubble until the server accepts or rejects it. */
   pending?: boolean;
   /** Shown under a failed bubble. */
+  error?: string;
+}
+
+export type CustomerWorkflowState =
+  | 'NORMAL'
+  | 'HUMAN_TAKEOVER'
+  | 'WAITING_FOR_CUSTOMER'
+  | 'CUSTOMER_RESPONDED'
+  | 'CLOSED';
+
+export interface CustomerCancellationState {
+  status: 'IDLE' | 'PENDING' | 'CONFIRMED' | 'DECLINED';
+  ticketNumber?: string;
+  ticketId?: number | string;
   error?: string;
 }
 

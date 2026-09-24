@@ -10,6 +10,8 @@ import { Settings } from './pages/Settings';
 import { Analytics } from './pages/Analytics';
 import { SlaCenter } from './pages/SlaCenter';
 import { TraceViewer } from './pages/TraceViewer';
+import { OperationsCenter } from './pages/OperationsCenter';
+import { AuditLogs } from './pages/AuditLogs';
 
 import { CustomerPortal } from './pages/CustomerPortal';
 import { CustomerWebApp } from './features/customer-web/CustomerWebApp';
@@ -317,6 +319,10 @@ export default function App() {
               fetchConversations(true);
               return;
             }
+            if (payload.event === 'OPERATIONS_EVENT') {
+              window.dispatchEvent(new CustomEvent('ticketx:operations-event', { detail: payload.data }));
+              return;
+            }
             if (payload.event !== 'NEW_HUMAN_REQUEST') return;
             // No conversation id means there is nothing to open. This used to
             // default to '1', which pointed the operator at an unrelated
@@ -401,12 +407,14 @@ export default function App() {
       case 'center-iam': return isSuperAdmin ? <div className="p-6 sm:p-8"><CenterIamManagement /></div> : <Dashboard apiBaseUrl={API_BASE_URL} conversations={conversations as any} conversationsLoading={conversationLoading} conversationsError={conversationError} conversationsUpdatedAt={conversationUpdatedAt} backendHealthy={backendHealthy} refreshConversations={() => fetchConversations(true)} onNavigate={setActiveTab} />;
       case 'master-data': return isSuperAdmin ? <MasterDataManagement /> : <Dashboard apiBaseUrl={API_BASE_URL} conversations={conversations as any} conversationsLoading={conversationLoading} conversationsError={conversationError} conversationsUpdatedAt={conversationUpdatedAt} backendHealthy={backendHealthy} refreshConversations={() => fetchConversations(true)} onNavigate={setActiveTab} />;
       case 'analytics': return <Analytics apiBaseUrl={API_BASE_URL} />;
-      case 'sla-center': return <SlaCenter apiBaseUrl={API_BASE_URL} onNavigate={setActiveTab} />;
+      case 'sla-center': return <SlaCenter apiBaseUrl={API_BASE_URL} onNavigate={setActiveTab} showToast={showToast} />;
       case 'traces': return <TraceViewer apiBaseUrl={API_BASE_URL} defaultModule="runtime" />;
+      case 'operations': return <OperationsCenter />;
       case 'automation-flows': return <TraceViewer apiBaseUrl={API_BASE_URL} defaultModule="automation" />;
       case 'prompt-sessions': return <TraceViewer apiBaseUrl={API_BASE_URL} defaultModule="prompts" />;
-      case 'handoff-audit': return <TraceViewer apiBaseUrl={API_BASE_URL} defaultModule="handoffs" />;
+      case 'handoff-audit': return <OperationsCenter />;
       case 'plane-integrations': return <div className="p-6 sm:p-8"><PlaneIntegrationsManagement /></div>;
+      case 'audit-logs': return <AuditLogs />;
       case 'settings': return <Settings apiBaseUrl={API_BASE_URL} onNavigate={setActiveTab} />;
       default: return <Dashboard apiBaseUrl={API_BASE_URL} conversations={conversations as any} conversationsLoading={conversationLoading} conversationsError={conversationError} conversationsUpdatedAt={conversationUpdatedAt} backendHealthy={backendHealthy} refreshConversations={() => fetchConversations(true)} onNavigate={setActiveTab} />;
     }

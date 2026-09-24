@@ -10,6 +10,7 @@ import { randomUUID } from "node:crypto";
 import { JwtUtil } from "../../shared/jwt";
 import { broadcastWebChatOutbound } from "../../presentation/http/routes/WebChatGateway";
 import { z } from "zod";
+import { conversationFocusService } from "../../services/ConversationFocusService";
 
 const CreatePortalTicketSchema = z.object({
   customerId: z.string().optional(),
@@ -57,18 +58,29 @@ export function registerPortalRoutes(
 
     let convId: string;
     const identityIdNum = parseInt(authoritativeCustomerId, 10);
+    const authProjIdNum = parseInt(authoritativeProjectId, 10);
     const openConvRes = await pool.query(
-      `SELECT id FROM conversations WHERE identity_id = $1 AND (project_id = $2 OR project_id IS NULL) ORDER BY created_at DESC LIMIT 1`,
-      [identityIdNum, parseInt(authoritativeProjectId, 10)]
+      `SELECT id, project_id FROM conversations WHERE identity_id = $1 AND (project_id = $2 OR project_id IS NULL) ORDER BY created_at DESC LIMIT 1`,
+      [identityIdNum, authProjIdNum]
     );
 
     if (openConvRes.rows.length > 0) {
       convId = String(openConvRes.rows[0].id);
+      if (!openConvRes.rows[0].project_id) {
+        await pool.query(
+          "UPDATE conversations SET project_id = $1 WHERE id = $2 AND project_id IS NULL",
+          [authProjIdNum, convId]
+        );
+      }
     } else {
       const identRes = await pool.query("SELECT channel_ref, channel FROM identities WHERE id = $1 LIMIT 1", [identityIdNum]);
       const channelRef = identRes.rows[0]?.channel_ref || authoritativeCustomerId;
       const channel = identRes.rows[0]?.channel || "WebChat";
       convId = await deps.dbAdapter.ensureConversation(channelRef, authoritativeCompanyId, channel);
+      await pool.query(
+        "UPDATE conversations SET project_id = $1 WHERE id = $2 AND project_id IS NULL",
+        [authProjIdNum, convId]
+      );
     }
 
     const slaInfo = await deps.slaService.calculateSLADueDate(authoritativeProjectId, body.priority);
@@ -123,9 +135,31 @@ export function registerPortalRoutes(
       });
     } catch {}
 
+    const createdTicketId = (result.data as any)?.id ? Number((result.data as any).id) : null;
+    if (createdTicketId && convId) {
+      try {
+        await pool.query(
+          `UPDATE conversations SET active_ticket_id = $1, updated_at = NOW() WHERE id = $2`,
+          [createdTicketId, parseInt(convId, 10)]
+        );
+        broadcastWebChatOutbound({
+          event: "active_ticket_switched",
+          data: {
+            ticketId: createdTicketId,
+            ticketNumber,
+            conversationId: convId,
+            projectId: parseInt(authoritativeProjectId, 10),
+          },
+          recipientId: authoritativeCustomerId,
+        });
+      } catch {}
+    }
+
     return reply.code(201).send({
       success: true,
+      ticketId: createdTicketId,
       ticketNumber,
+      activeTicketId: createdTicketId,
       dueDate: slaInfo.dueDate,
       result,
     });
@@ -143,22 +177,15 @@ export function registerPortalRoutes(
     let projectId: string = query?.projectId ? String(query.projectId) : "";
 
     if (!projectId || projectId === "undefined") {
-      try {
-        const convRes = await pool.query(
-          `SELECT project_id FROM conversations 
-           WHERE (identity_id::text = $1 OR identity_id IN (SELECT id FROM identities WHERE profile_id::text = $2))
-             AND status = 'open' 
-           ORDER BY id DESC LIMIT 1`,
-          [p.subject, p.profileId]
-        );
-        if (convRes.rows.length > 0 && convRes.rows[0].project_id) {
-          projectId = String(convRes.rows[0].project_id);
-        } else {
-          projectId = String(p.projectIds[0]);
-        }
-      } catch {
-        projectId = String(p.projectIds[0]);
-      }
+      // The principal's project, not "whichever conversation is newest".
+      //
+      // This used to fall back to `SELECT project_id FROM conversations ...
+      // ORDER BY id DESC LIMIT 1`, unscoped by project, so a customer holding
+      // two projects saw the ticket list of whichever project they had most
+      // recently opened a conversation in — including right after switching
+      // away from it. The sidebar must follow the same current project as the
+      // chat, and the token is what carries it.
+      projectId = String(p.projectIds[0]);
     }
 
     // The project the browser asked for is honoured only if the principal
@@ -187,10 +214,33 @@ export function registerPortalRoutes(
     // `listAllTickets` applies the ownership chain the platform already defines:
     // ticket -> conversation -> identity -> profile.
     const tickets = await deps.dbAdapter.listAllTickets(undefined, projectId, p.profileId, undefined, tenantCtx);
+
+    let canonicalActiveTicketId: number | null = null;
+    try {
+      const convRes = await pool.query(
+        `SELECT c.active_ticket_id, t.status
+         FROM conversations c
+         LEFT JOIN tickets t ON t.id = c.active_ticket_id
+         WHERE (c.identity_id = $1 OR c.identity_id IN (SELECT id FROM identities WHERE profile_id::text = $2))
+           AND c.project_id = $3
+           AND c.status = 'open'
+         ORDER BY c.id DESC LIMIT 1`,
+        [parseInt(p.subject, 10) || 0, String(p.profileId), parseInt(projectId, 10)]
+      );
+      if (convRes.rows.length > 0 && convRes.rows[0].active_ticket_id) {
+        const row = convRes.rows[0];
+        const st = String(row.status || "").toUpperCase();
+        if (st && st !== "CLOSED" && st !== "CANCELLED") {
+          canonicalActiveTicketId = Number(row.active_ticket_id);
+        }
+      }
+    } catch {}
+
     return reply.code(200).send({
       success: true,
       projectId,
       tenantOrgId: tenantCtx.orgId,
+      activeTicketId: canonicalActiveTicketId ? String(canonicalActiveTicketId) : null,
       tickets,
     });
   });
@@ -262,11 +312,40 @@ export function registerPortalRoutes(
     });
 
     if (!result.applied) {
+      if (result.code === "NO_OP") {
+        return reply.code(200).send({
+          success: true,
+          ticketId: match.id,
+          ticketNumber: match.ticket_number,
+          from: result.from || body.targetStatus,
+          to: body.targetStatus,
+          idempotent: true,
+        });
+      }
+      if (result.code === "CONCURRENT_MODIFICATION") {
+        const freshRow = await pool.query("SELECT status FROM tickets WHERE id = $1", [match.id]);
+        if (freshRow.rows[0]?.status === body.targetStatus) {
+          return reply.code(200).send({
+            success: true,
+            ticketId: match.id,
+            ticketNumber: match.ticket_number,
+            from: result.from || body.targetStatus,
+            to: body.targetStatus,
+            idempotent: true,
+          });
+        }
+      }
       return reply.code(400).send({
         error: "Bad Request",
         code: result.code || "TRANSITION_REFUSED",
         message: result.reason || "Transition not permitted",
       });
+    }
+
+    // If ticket transitioned to terminal status, drop it as the conversation's
+    // focus (shared owner with the LINE protocols, 2026-09-17).
+    if (result.to === "CLOSED" || result.to === "CANCELLED") {
+      await conversationFocusService.releaseTerminalTicket(match.id).catch(() => {});
     }
 
     // Broadcast realtime ticket_updated event to customer
@@ -347,19 +426,21 @@ export function registerPortalRoutes(
     }
 
     try {
-      let currentActiveProjectId = String(p.projectIds?.[0] || "1");
-      try {
-        const convRes = await pool.query(
-          `SELECT project_id FROM conversations 
-           WHERE (identity_id::text = $1 OR identity_id IN (SELECT id FROM identities WHERE profile_id::text = $2))
-             AND status = 'open' 
-           ORDER BY id DESC LIMIT 1`,
-          [p.subject, p.profileId]
-        );
-        if (convRes.rows.length > 0 && convRes.rows[0].project_id) {
-          currentActiveProjectId = String(convRes.rows[0].project_id);
-        }
-      } catch {}
+      // The authenticated principal is the authority on which project is current.
+      //
+      // This used to overwrite the token's project with the project of the
+      // customer's most recently created open conversation
+      // (`ORDER BY id DESC LIMIT 1`, unscoped by project). A customer holding
+      // more than one project therefore had "current project" decided by
+      // whichever conversation happened to be newest: after chatting in project
+      // B, switching back to A still reported B, so the portal relabelled itself
+      // to B and re-selected it — the switch appeared to do nothing, or to lag
+      // one step behind.
+      //
+      // `customerAuth` puts exactly one concrete project on the principal, and
+      // switch-project reissues the token, so the token already carries the
+      // answer.
+      const currentActiveProjectId = String(p.projectIds?.[0] || "1");
 
       const res = await pool.query(
         `SELECT DISTINCT p.id, p.name, p.company_id, c.name as company_name, p.org_id
@@ -415,30 +496,53 @@ export function registerPortalRoutes(
 
       const proj = projRes.rows[0];
 
-      await pool.query(
-        `INSERT INTO profile_projects (profile_id, project_id, created_at)
-         VALUES ($1, $2, NOW())
-         ON CONFLICT (profile_id, project_id) DO NOTHING`,
-        [parseInt(p.profileId, 10), targetProjectId]
+      // Switching SELECTS among projects the customer already holds. It does not
+      // grant one.
+      //
+      // This used to `INSERT INTO profile_projects ... ON CONFLICT DO NOTHING`
+      // for whatever project id was posted, with no membership check at all, and
+      // then hand back a customer token scoped to it. Since
+      // `GET /api/portal/projects` authorises from that same table, a customer
+      // could name any existing project, be granted it, and see it appear in
+      // their own project list — self-service access.
+      //
+      // Membership is still granted by the paths that actually prove
+      // entitlement: join-code redemption in WebChatGateway and LINE onboarding.
+      const member = await pool.query(
+        `SELECT 1 FROM profile_projects WHERE profile_id::text = $1::text AND project_id = $2 LIMIT 1`,
+        [p.profileId, targetProjectId]
       );
+      if (member.rowCount === 0) {
+        // Same shape as a project that does not exist: do not disclose which
+        // projects are real to someone who cannot use them.
+        return reply.code(404).send({ error: "Not Found", message: "Project not found" });
+      }
 
       if (proj.company_id) {
         await pool.query("UPDATE profiles SET company_id = $1 WHERE id::text = $2", [proj.company_id, p.profileId]);
       }
 
-      await pool.query(
-        `UPDATE conversations 
-         SET project_id = $1, org_id = $2
-         WHERE (identity_id::text = $3 OR identity_id IN (SELECT id FROM identities WHERE profile_id::text = $4))
-           AND status = 'open'`,
-        [targetProjectId, proj.org_id || "org_default", p.subject, p.profileId]
-      );
+      // The conversation is NOT moved.
+      //
+      // There used to be an `UPDATE conversations SET project_id = ...` over
+      // every open conversation of this customer. Messages belong to a
+      // conversation and the conversation is the project boundary, so that
+      // statement dragged the whole transcript into the newly selected project
+      // and retroactively relabelled history — which is exactly why the previous
+      // project's messages kept appearing after a switch. They had genuinely
+      // become the new project's messages.
+      //
+      // Each project keeps its own conversation. The WebChat gateway already
+      // resolves `findActiveByIdentity(identityId, projectId)` and opens or
+      // creates the conversation for the selected project on demand, so nothing
+      // needs to be rewritten here.
 
       const jwtSecret = process.env.SESSION_SECRET || process.env.JWT_SECRET || "ticketx-fallback-session-secret";
       const newToken = JwtUtil.sign(
         {
           profileId: p.profileId,
           identityId: p.subject,
+          channelRef: p.channelRef || p.subject,
           kind: "customer",
           role: "customer",
           projectId: String(targetProjectId),
@@ -462,7 +566,113 @@ export function registerPortalRoutes(
     }
   });
 
-  // 8. Update Customer Profile
+  // 8. Switch active ticket focus pointer
+  fastify.post("/api/portal/switch-ticket", { preHandler: [customerAuthHook] }, async (request, reply) => {
+    const p = request.principal;
+    if (!p || p.kind !== "customer" || !p.profileId || !p.projectIds || p.projectIds.length === 0) {
+      return reply.code(403).send({ error: "Forbidden", message: "Customer authentication required" });
+    }
+
+    const tenantCtx = request.tenantContext;
+    const authoritativeProjectId = parseInt(String(p.projectIds[0]), 10);
+    const body = request.body as any;
+    const rawTicketId = body?.ticketId !== undefined && body?.ticketId !== null ? String(body.ticketId).trim() : null;
+
+    // A. Deselect active ticket
+    if (!rawTicketId) {
+      const convRes = await pool.query(
+        `SELECT id, project_id FROM conversations
+         WHERE (identity_id = $1 OR identity_id IN (SELECT id FROM identities WHERE profile_id::text = $2))
+           AND project_id = $3
+           AND status = 'open'
+         ORDER BY id DESC LIMIT 1`,
+        [parseInt(p.subject, 10) || 0, String(p.profileId), authoritativeProjectId]
+      );
+      if (convRes.rows.length > 0) {
+        await pool.query(
+          `UPDATE conversations SET active_ticket_id = NULL, updated_at = NOW() WHERE id = $1`,
+          [convRes.rows[0].id]
+        );
+      }
+      return reply.code(200).send({
+        success: true,
+        activeTicketId: null,
+        ticketNumber: null,
+        projectId: authoritativeProjectId,
+      });
+    }
+
+    // B. Validate requested ticket ownership and project scope
+    const tickets = await deps.dbAdapter.listAllTickets(undefined, String(authoritativeProjectId), p.profileId, undefined, tenantCtx);
+    const match = tickets.find((t: any) => String(t.id) === rawTicketId || t.ticket_number === rawTicketId || t.ticket_id === rawTicketId);
+
+    if (!match) {
+      return reply.code(404).send({ error: "Not Found", message: "Ticket not found or inaccessible" });
+    }
+
+    // Prohibit cross-project ticket selection
+    if (Number(match.project_id) !== authoritativeProjectId) {
+      return reply.code(403).send({ error: "Forbidden", message: "Cross-project ticket switch forbidden" });
+    }
+
+    // Reject closed or cancelled tickets
+    const st = String(match.status || "").toUpperCase();
+    if (st === "CLOSED" || st === "CANCELLED") {
+      return reply.code(400).send({ error: "Bad Request", message: "Cannot select a closed or cancelled ticket" });
+    }
+
+    // C. Persist active_ticket_id into canonical conversation (project_id MUST NOT change)
+    let convId: number | null = null;
+    const convRes = await pool.query(
+      `SELECT id, project_id FROM conversations
+       WHERE (identity_id = $1 OR identity_id IN (SELECT id FROM identities WHERE profile_id::text = $2))
+         AND project_id = $3
+         AND status = 'open'
+       ORDER BY id DESC LIMIT 1`,
+      [parseInt(p.subject, 10) || 0, String(p.profileId), authoritativeProjectId]
+    );
+
+    if (convRes.rows.length === 0 && match.conversation_id) {
+      const ticketConvRes = await pool.query(
+        `SELECT id, project_id FROM conversations WHERE id = $1 AND project_id = $2 AND status = 'open' LIMIT 1`,
+        [match.conversation_id, authoritativeProjectId]
+      );
+      if (ticketConvRes.rows.length > 0) {
+        convRes.rows.push(ticketConvRes.rows[0]);
+      }
+    }
+
+    if (convRes.rows.length > 0) {
+      convId = convRes.rows[0].id;
+      await pool.query(
+        `UPDATE conversations SET active_ticket_id = $1, updated_at = NOW() WHERE id = $2`,
+        [match.id, convId]
+      );
+    }
+
+    // Broadcast realtime event to customer session
+    try {
+      broadcastWebChatOutbound({
+        event: "active_ticket_switched",
+        data: {
+          ticketId: match.id,
+          ticketNumber: match.ticket_number,
+          conversationId: convId ? String(convId) : undefined,
+          projectId: authoritativeProjectId,
+        },
+        recipientId: p.subject,
+      });
+    } catch {}
+
+    return reply.code(200).send({
+      success: true,
+      activeTicketId: match.id ? Number(match.id) : null,
+      ticketNumber: match.ticket_number,
+      projectId: authoritativeProjectId,
+    });
+  });
+
+  // 9. Update Customer Profile
   fastify.put("/api/portal/profile", { preHandler: [customerAuthHook] }, async (request, reply) => {
     const p = request.principal;
     if (!p || p.kind !== "customer" || !p.profileId) {

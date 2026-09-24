@@ -5,7 +5,7 @@ import { config } from "../config/env";
 import { createLogger } from "../observability/logger";
 import { addBusinessDays, businessDaysBetween } from "./BusinessCalendar";
 import { ConstantSystemService } from "./ConstantSystemService";
-import { customerNotificationService } from "./CustomerNotificationService";
+import { customerNotificationService, thaiDateStamp } from "./CustomerNotificationService";
 import { ticketStateMachine } from "../domain/ticket/TicketStateMachine";
 import { doneEmailService } from "./UrgentAlertService";
 
@@ -87,46 +87,6 @@ export function slotStartedAt(createdAt: Date, slot: number, interval: CadenceIn
 const OPEN_STATUS_EXCLUDED = ["resolved", "closed", "cancelled", "done", "customer_confirmed"];
 const ADVISORY_LOCK_KEY = "ticketx:sla_cadence";
 
-/** Plain-Thai status wording — same semantics as the reply prompt's table. */
-function thaiStatus(status: string | null | undefined): string {
-  switch (String(status || "").trim().toUpperCase()) {
-    // Short labels: they sit on a "• สถานะ:" bullet the customer scans
-    // (operator decision 2026-09-09), so no trailing explanation.
-    case "NEW":
-    case "OPEN":
-    case "BACKLOG":
-    case "TODO":
-      return "รับเรื่องแล้ว รอดำเนินการ";
-    case "TRIAGED":
-      return "ตรวจสอบเบื้องต้นแล้ว";
-    case "IN_PROGRESS":
-      return "กำลังแก้ไข";
-    case "REOPENED":
-      return "เปิดเคสอีกครั้ง กำลังตรวจสอบซ้ำ";
-    case "WAITING_CUSTOMER":
-      return "รอข้อมูลเพิ่มเติมจากคุณ";
-    case "WAITING_INTERNAL":
-      return "รอทีมภายในตรวจสอบ";
-    default:
-      return "กำลังดำเนินการ";
-  }
-}
-
-/** "วันนี้ 18:34 น." / "พรุ่งนี้ 09:00 น." / "8 ก.ย. 2569 เวลา 17:00 น." in Bangkok time. */
-function thaiWhen(date: Date, now: Date): string {
-  const TZ = 7 * 3_600_000;
-  const b = new Date(date.getTime() + TZ);
-  const n = new Date(now.getTime() + TZ);
-  const pad = (x: number) => (x < 10 ? `0${x}` : String(x));
-  const clock = `${pad(b.getUTCHours())}:${pad(b.getUTCMinutes())} น.`;
-  const key = (x: Date) => `${x.getUTCFullYear()}-${x.getUTCMonth()}-${x.getUTCDate()}`;
-  const tomorrow = new Date(n.getTime() + 86_400_000);
-  if (key(b) === key(n)) return `วันนี้ ${clock}`;
-  if (key(b) === key(tomorrow)) return `พรุ่งนี้ ${clock}`;
-  const MONTHS = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
-  return `${b.getUTCDate()} ${MONTHS[b.getUTCMonth()]} ${b.getUTCFullYear() + 543} เวลา ${clock}`;
-}
-
 interface OpenTicketRow {
   id: number;
   ticket_number: string;
@@ -189,7 +149,7 @@ export interface CadenceRunLog {
 
 export interface TicketListFilter {
   /** cadence = only what the engine would consider; open/closed/all otherwise. */
-  scope?: "cadence" | "open" | "closed" | "all";
+  scope?: "cadence" | "open" | "closed" | "all" | "deleted";
   priority?: string;
   channel?: string;
   projectId?: number;
@@ -672,22 +632,12 @@ export class SLACadenceService {
       return false;
     }
     const slotKey = slotKeyOverride || `ticket:${t.id}:user:${slot}`;
-    const due = t.due_date ? new Date(t.due_date) : null;
-    const dueAhead = due && !isNaN(due.getTime()) && due.getTime() > now.getTime();
-    // Bullet lines of the progress report (the "เรื่อง" line is added by the
-    // notification service from `subject`). Layout decision 2026-09-09: the
-    // customer scans for the status and the target time, so each is its own
-    // line instead of one long sentence.
-    const created = t.created_at ? new Date(t.created_at) : null;
-    const detail = [
-      `• สถานะ: ${thaiStatus(t.status)}`,
-      dueAhead
-        ? `• คาดว่าเรียบร้อย: ${thaiWhen(due as Date, now)}`
-        : "• คาดว่าเรียบร้อย: ทีมงานกำลังเร่งดำเนินการให้โดยเร็วที่สุดค่ะ",
-      ...(created && !isNaN(created.getTime()) ? [`• แจ้งเมื่อ: ${thaiWhen(created, now)}`] : []),
-    ].join("\n");
+    // The card (operator decision 2026-09-10) is rendered by the notification
+    // service from these facts: status word, "แจ้งเมื่อ" = created_at, and the
+    // "คาดว่าเรียบร้อย" line while due_date is still ahead.
+    const facts = { status: t.status, subject: t.subject ?? null, createdAt: t.created_at ?? null, dueAt: t.due_date ?? null };
     if (this.effectiveDryRun()) {
-      logger.info({ ticketNumber: t.ticket_number, slot, slotKey, conversationId: t.conversation_id, detail }, "[dry-run] would send customer progress report");
+      logger.info({ ticketNumber: t.ticket_number, slot, slotKey, conversationId: t.conversation_id, facts }, "[dry-run] would send customer progress report");
       return true;
     }
     const logId = await this.claimSlot(t.id, "user", slotKey, "line");
@@ -703,7 +653,7 @@ export class SLACadenceService {
         subject: t.subject ?? null,
         projectId: t.project_id ?? null,
         correlationId: slotKey,
-        detail,
+        facts,
       });
       await this.finishSlot(logId, res.sent ? "sent" : "skipped");
       if (res.sent) {
@@ -788,7 +738,7 @@ export class SLACadenceService {
     if (this.humanOwnsThread(t)) return false;
     const closeDays = config.RESOLUTION_AUTO_CLOSE_BUSINESS_DAYS;
     const deadline = closeDays > 0
-      ? `หากไม่ได้รับการตอบกลับ ระบบจะปิดเคสให้อัตโนมัติภายใน ${thaiWhen(addBusinessDays(since, closeDays), now)} นะคะ`
+      ? `หากไม่ได้รับการตอบกลับ ระบบจะปิดเคสให้อัตโนมัติภายใน ${thaiDateStamp(addBusinessDays(since, closeDays))} นะคะ`
       : "";
     if (this.effectiveDryRun()) {
       logger.info({ ticketNumber: t.ticket_number, slotKey, conversationId: t.conversation_id }, "[dry-run] would send resolution nudge");
@@ -986,7 +936,7 @@ export class SLACadenceService {
     const scope = filter.scope || "cadence";
     const limit = Math.min(200, Math.max(1, filter.limit ?? 60));
     const params: any[] = [];
-    const where: string[] = ["t.deleted_at IS NULL"];
+    const where: string[] = [filter.scope === "deleted" ? "t.deleted_at IS NOT NULL" : "t.deleted_at IS NULL"];
 
     if (scope === "cadence" || scope === "open") {
       params.push(OPEN_STATUS_EXCLUDED);
@@ -1324,6 +1274,84 @@ export class SLACadenceService {
     await this.audit(t.id, "SLA_CONSOLE_DELIVER_TICKET", { from: t.status, to: result.to ?? "RESOLVED", eventId: result.eventId ?? null, notified, notifyError });
     logger.warn({ ticketId: t.id, ticketNumber: t.ticket_number, from: t.status, notified }, "SLA console delivered a ticket to the customer");
     return { ok: true as const, ticket: { id: t.id, ticket_number: t.ticket_number, status: result.to ?? "RESOLVED" }, previousStatus: t.status, notified, notifyError, eventId: result.eventId ?? null };
+  }
+
+  /** Actions the console may apply to a selection of tickets. */
+  static readonly BULK_ACTIONS = ["close", "cancel", "delete", "restore"] as const;
+  /** Upper bound on one bulk request, so a runaway selection cannot touch the whole table. */
+  static readonly BULK_MAX = 200;
+
+  /**
+   * Applies one action to many tickets, one ticket at a time, and reports the
+   * outcome per ticket. A single failure never aborts the rest: the caller
+   * gets the full list back and can retry only what failed.
+   */
+  async bulkTicketAction(refs: string[], action: "close" | "cancel" | "delete" | "restore", reason?: string) {
+    const unique = Array.from(new Set((refs || []).map((r) => String(r || "").trim()).filter(Boolean)));
+    if (unique.length === 0) return { ok: false as const, reason: "NO_TICKETS_SELECTED" };
+    if (unique.length > SLACadenceService.BULK_MAX) {
+      return { ok: false as const, reason: "TOO_MANY_TICKETS", limit: SLACadenceService.BULK_MAX, requested: unique.length };
+    }
+
+    const results: { ref: string; ok: boolean; ticketNumber?: string | null; from?: string | null; to?: string | null; reason?: string }[] = [];
+    for (const ref of unique) {
+      try {
+        if (action === "close" || action === "cancel") {
+          const r = await this.closeTicket(ref, action === "close" ? "closed" : "cancelled", reason);
+          results.push(r.ok
+            ? { ref, ok: true, ticketNumber: r.ticket?.ticket_number ?? null, from: r.previousStatus ?? null, to: r.ticket?.status ?? null }
+            : { ref, ok: false, reason: r.reason });
+        } else {
+          const r = action === "delete" ? await this.softDeleteTicket(ref, reason) : await this.restoreTicket(ref);
+          results.push(r.ok
+            ? { ref, ok: true, ticketNumber: r.ticketNumber, to: action === "delete" ? "DELETED" : "RESTORED" }
+            : { ref, ok: false, reason: r.reason });
+        }
+      } catch (err: any) {
+        results.push({ ref, ok: false, reason: String(err?.message || err) });
+      }
+    }
+
+    const okCount = results.filter((r) => r.ok).length;
+    logger.warn({ action, requested: unique.length, ok: okCount, failed: unique.length - okCount }, "SLA console ran a bulk ticket action");
+    return { ok: true as const, action, requested: unique.length, succeeded: okCount, failed: unique.length - okCount, results };
+  }
+
+  /**
+   * Soft delete: sets tickets.deleted_at, which every cadence, board and
+   * overview query already filters on, so the ticket disappears from the
+   * product and stops producing reminders and customer updates.
+   *
+   * Deliberately NOT a row delete. A real DELETE fires
+   * trg_queue_linked_plane_work_item_delete, which queues the deletion of the
+   * linked Plane work item, and cascades away ticket_events, cadence claims
+   * and notification logs. Hiding a test ticket must not destroy engineering's
+   * board or the audit trail.
+   */
+  async softDeleteTicket(ref: string, reason?: string) {
+    const t = await this.loadTicketByRef(ref);
+    if (!t) return { ok: false as const, reason: "TICKET_NOT_FOUND" };
+    if (t.deleted_at) return { ok: false as const, reason: "ALREADY_DELETED", ticketNumber: t.ticket_number };
+    // deleted_at is a varchar column; store the same ISO shape the existing rows use.
+    const { rowCount } = await pool.query(
+      `UPDATE tickets SET deleted_at = NOW()::text, updated_at = NOW() WHERE id = $1 AND deleted_at IS NULL`,
+      [t.id]
+    );
+    if (!rowCount) return { ok: false as const, reason: "ALREADY_DELETED", ticketNumber: t.ticket_number };
+    await this.audit(t.id, "SLA_CONSOLE_SOFT_DELETE_TICKET", { status: t.status, reason: reason || null });
+    logger.warn({ ticketId: t.id, ticketNumber: t.ticket_number, status: t.status }, "SLA console soft-deleted a ticket");
+    return { ok: true as const, ticketId: t.id, ticketNumber: t.ticket_number, previousStatus: t.status };
+  }
+
+  /** Undoes a soft delete. The ticket returns to every list and, if still open, to the cadence. */
+  async restoreTicket(ref: string) {
+    const t = await this.loadTicketByRef(ref);
+    if (!t) return { ok: false as const, reason: "TICKET_NOT_FOUND" };
+    if (!t.deleted_at) return { ok: false as const, reason: "NOT_DELETED", ticketNumber: t.ticket_number };
+    await pool.query(`UPDATE tickets SET deleted_at = NULL, updated_at = NOW() WHERE id = $1`, [t.id]);
+    await this.audit(t.id, "SLA_CONSOLE_RESTORE_TICKET", { status: t.status });
+    logger.warn({ ticketId: t.id, ticketNumber: t.ticket_number }, "SLA console restored a soft-deleted ticket");
+    return { ok: true as const, ticketId: t.id, ticketNumber: t.ticket_number, previousStatus: t.status };
   }
 
   private describeCadence(

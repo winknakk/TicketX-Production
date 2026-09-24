@@ -33,6 +33,8 @@
     "src/test-customer-frontend.ts",
     "src/test-websocket-auth-audit.ts",
     "src/test-webchat-event-normalization.ts",
+    "src/test-flow5-flow6.ts",
+    "src/run-browser-e2e.ts",
     "src/**/*.test.ts"
   ]
 }

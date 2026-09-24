@@ -279,6 +279,16 @@ export function CustomerSessionProvider({ children }: { children: ReactNode }) {
       const res = await customerApi.switchProject(projectId);
       if (res.success) {
         const generation = ++generationRef.current;
+        // Adopt the project-scoped token the switch just issued.
+        //
+        // `customerApi.switchProject` writes it to sessionStorage, but this
+        // state is what the chat actually runs on: the socket effect and the
+        // history load both key off `token`. Without this the React token stayed
+        // on the previous project, so neither re-ran — the socket kept its old
+        // conversation rooms and history was never refetched, while
+        // `activeProjectId` below relabelled the UI. That is the whole of
+        // "switched project, still seeing the old transcript".
+        if (res.token) setTokenState(res.token);
         setActiveProjectId(res.projectId);
         setProfile((prev) =>
           prev ? { ...prev, companyName: res.companyName || prev.companyName, companyId: String(res.companyId || prev.companyId) } : prev

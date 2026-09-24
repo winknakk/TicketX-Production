@@ -219,23 +219,47 @@ export class CustomerApiClient {
   }
 
   /**
-   * Customer-safe transition (Confirm resolution or Reopen)
+   * Switch active ticket focus for customer conversation
+   */
+  async switchTicket(ticketId: number | string | null): Promise<{
+    success: boolean;
+    activeTicketId: number | null;
+    ticketNumber?: string;
+    conversationId?: string;
+    projectId?: number;
+  }> {
+    return this.request<{
+      success: boolean;
+      activeTicketId: number | null;
+      ticketNumber?: string;
+      conversationId?: string;
+      projectId?: number;
+    }>('/api/portal/switch-ticket', {
+      method: 'POST',
+      body: JSON.stringify({ ticketId: ticketId ? Number(ticketId) : null }),
+    });
+  }
+
+  /**
+   * Customer-safe transition (Confirm resolution, Reopen, or Cancel)
    */
   async transitionTicket(
     id: string | number,
-    targetStatus: 'CUSTOMER_CONFIRMED' | 'REOPENED',
+    targetStatus: 'CUSTOMER_CONFIRMED' | 'REOPENED' | 'CANCELLED',
     reason?: string
   ): Promise<{
     success: boolean;
     ticketId: number | string;
     ticketNumber: string;
     to: string;
+    idempotent?: boolean;
   }> {
     return this.request<{
       success: boolean;
       ticketId: number | string;
       ticketNumber: string;
       to: string;
+      idempotent?: boolean;
     }>(`/api/portal/tickets/${encodeURIComponent(String(id))}/transition`, {
       method: 'POST',
       body: JSON.stringify({ targetStatus, reason }),

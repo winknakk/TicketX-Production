@@ -26,6 +26,7 @@ export type CustomerSocketEvent =
   | { type: 'SYSTEM_EVENT'; code: string; text: string; at: string }
   | { type: 'PROJECT_EVENT'; data: Record<string, unknown> }
   | { type: 'TICKET_EVENT'; event: 'created' | 'updated'; data: Record<string, unknown> }
+  | { type: 'TICKET_SWITCHED'; data: Record<string, unknown> }
   | { type: 'TYPING_EVENT'; isTyping: boolean }
   | { type: 'ERROR_EVENT'; message: string }
   | { type: 'IGNORED'; reason: string };
@@ -166,6 +167,16 @@ export function normalizeSocketEvent(payload: unknown, receivedAt: string): Cust
     return { type: 'TICKET_EVENT', event: eventType, data };
   }
 
+  if (p.event === 'active_ticket_switched' && p.data && typeof p.data === 'object') {
+    const data = p.data as Record<string, unknown>;
+    if (typeof window !== 'undefined') {
+      try {
+        window.dispatchEvent(new CustomEvent('ticketx:active_ticket_switched', { detail: data }));
+      } catch {}
+    }
+    return { type: 'TICKET_SWITCHED', data };
+  }
+
   if (p.event === 'message' && p.data && typeof p.data === 'object') {
     const data = p.data as Record<string, any>;
     const content = typeof data.content === 'string' ? data.content : '';
@@ -205,6 +216,15 @@ export function normalizeSocketEvent(payload: unknown, receivedAt: string): Cust
         kind: 'chat',
         id: resolvedId,
         externalId,
+        // Carried through so the store can reject a message belonging to
+        // another project's conversation. Older payloads omit it; the store
+        // treats absence as "cannot tell" and keeps the message.
+        conversationId:
+          typeof data.conversationId === 'string' && data.conversationId
+            ? data.conversationId
+            : typeof data.conversation_id === 'string' && data.conversation_id
+              ? data.conversation_id
+              : undefined,
         role: normalizeRole(data.role),
         content,
         createdAt: readTimestamp(data.createdAt),

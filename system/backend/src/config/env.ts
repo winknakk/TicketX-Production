@@ -82,9 +82,20 @@ export const EnvSchema = z.object({
   LINE_GROUP_GATEWAY_WEBHOOK_URL: z.string().url().default("https://wf.promptxai.com/api/v1/webhooks/dRV0RN5vXQLDZ67t9VROo"),
   LINE_ONBOARDING_MODE: z.enum(["code_required", "smart"]).default("code_required"),
   LINE_BATCH_ENABLED: z.coerce.boolean().default(true),
-  LINE_BATCH_WINDOW_MS: z.coerce.number().int().min(500).default(2000),
+  // 15 s (operator decision, spec v2 Flow 1): consecutive DM messages are grouped
+  // into one AI turn. Was 2000 ms in source while every environment set 15000.
+  LINE_BATCH_WINDOW_MS: z.coerce.number().int().min(500).default(15000),
+  // A screenshot sent alone within this many minutes of the conversation's
+  // focus case being opened is attached to that case without asking
+  // (operator decision 2026-09-17: 60 for the test period). 0 disables it and
+  // every standalone screenshot is asked about, as before.
+  LINE_IMAGE_AUTO_ATTACH_MINUTES: z.coerce.number().int().min(0).max(1440).default(60),
   PROJECT_JOIN_CODE_PEPPER: z.string().min(16).optional(),
   PLANE_API_URL: z.string().url().default("https://api.plane.so"),
+  // Browser-facing Plane host used for links written into work items
+  // ("open the related case"): <PLANE_WEB_URL>/<workspace>/projects/<id>/issues/<id>.
+  // Differs from PLANE_API_URL on Plane Cloud (api.plane.so vs the workspace's web host).
+  PLANE_WEB_URL: z.string().url().default("https://projects.oneweb.tech"),
   PLANE_API_KEY: z.string().default("plane_mock_key"),
   PLANE_PROJECT_ID: z.string().default("proj_id"),
   PLANE_WORKSPACE_SLUG: z.string().default("ws_id"),

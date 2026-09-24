@@ -27,6 +27,8 @@ import { adminSocketRegistry } from "../../../api/AdminSocketRegistry";
 import { projectResolver, normalizeJoinCode } from "../../../domain/project/ProjectResolver";
 import { findOrCreateWebChatGuestIdentity } from "../../../infrastructure/db/guestIdentityProvisioning";
 import { customerMessagePreRouter } from "../../../services/CustomerMessagePreRouter";
+import { TicketStateMachine } from "../../../domain/ticket/TicketStateMachine";
+import { caseResolver } from "../../../domain/case/CaseResolver";
 
 const logger = createLogger("WebChatGateway");
 
@@ -192,6 +194,17 @@ export default async function WebChatGateway(fastify: FastifyInstance) {
               data: {
                 id: resolvedId,
                 externalId: resolvedExternalId,
+                // Which conversation this belongs to, so the client can reject a
+                // message meant for another one.
+                //
+                // Outbound also targets `recipient:<channelRef>`, which is scoped
+                // to the IDENTITY, not the project — and one identity legitimately
+                // spans several projects. Without this field a socket viewing
+                // project B received project A's messages and had no way to tell.
+                // `conversations.project_id` is the project boundary, so the
+                // conversation id is sufficient to decide; the project id itself
+                // is not needed on the wire.
+                conversationId: payload.conversationId ? String(payload.conversationId) : undefined,
                 role: payload.role || "ai",
                 content: payload.text || payload.content || "",
                 createdAt: payload.sentAt || new Date().toISOString(),
@@ -489,11 +502,25 @@ export default async function WebChatGateway(fastify: FastifyInstance) {
 
       let activeConv = await conversationRepo.findActiveByIdentity(identityId, projectId);
       if (!activeConv) {
+        // The fallback is scoped to the SAME project as the primary lookup.
+        //
+        // It used to select `WHERE identity_id = $1 AND channel='webchat' AND
+        // status='open'` with no project filter, so a customer who switched to a
+        // project they had no conversation in was served a different project's
+        // transcript. `conversations.project_id` is the project boundary, and an
+        // identity legitimately spans several projects, so identity alone can
+        // never be the selector here.
+        //
+        // No conversation for this project is a normal, empty state — the
+        // gateway creates one when the customer actually sends something.
         const convRes = await pool.query(
-          `SELECT id, project_id FROM conversations 
-           WHERE identity_id = $1 AND LOWER(channel) = 'webchat' AND status = 'open'
-           ORDER BY id DESC LIMIT 1`,
-          [parseInt(identityId, 10) || 0]
+          `SELECT id, project_id FROM conversations
+            WHERE identity_id = $1
+              AND project_id = $2
+              AND LOWER(channel) = 'webchat'
+              AND status = 'open'
+            ORDER BY id DESC LIMIT 1`,
+          [parseInt(identityId, 10) || 0, parseInt(String(projectId), 10) || 0]
         );
         if (convRes.rows.length > 0) {
           activeConv = { id: String(convRes.rows[0].id) } as any;
@@ -526,31 +553,71 @@ export default async function WebChatGateway(fastify: FastifyInstance) {
       const page = await messageRepo.findPageByConversationId(activeConv.id, limit, before);
       const messages = page.messages;
 
-      // Hydrate attachments
+      // Hydrate attachments and ticket context
       const messagesWithAttachments = await Promise.all(
         messages.map(async (m) => {
-          const { rows } = await pool.query(
-            "SELECT file_url, file_name, file_type, file_size FROM message_attachments WHERE message_id = $1",
-            [parseInt(m.id)]
-          );
+          const [attRes, msgRes] = await Promise.all([
+            pool.query(
+              "SELECT file_url, file_name, file_type, file_size, metadata FROM message_attachments WHERE message_id = $1",
+              [parseInt(m.id)]
+            ),
+            pool.query(
+              "SELECT ticket_id FROM messages WHERE id = $1 LIMIT 1",
+              [parseInt(m.id)]
+            )
+          ]);
+
+          const msgTicketId = msgRes.rows[0]?.ticket_id;
+
           return {
             id: m.id,
             externalId: (m as any).externalId || m.id,
             role: m.role,
             content: m.content,
             createdAt: m.createdAt,
-            attachments: rows.map(r => ({
+            activeTicketId: msgTicketId ? String(msgTicketId) : undefined,
+            attachments: attRes.rows.map(r => ({
               fileUrl: r.file_url,
               fileName: r.file_name,
               fileType: r.file_type,
-              fileSize: r.file_size
+              fileSize: r.file_size,
+              metadata: r.metadata
             }))
           };
         })
       );
 
+      // Resolve canonical active ticket for the conversation
+      let canonicalActiveTicketId: number | null = null;
+      let canonicalActiveTicket: any = null;
+      try {
+        const cRow = await pool.query(
+          `SELECT c.active_ticket_id, t.id, t.ticket_number, t.status, t.subject, t.priority
+           FROM conversations c
+           LEFT JOIN tickets t ON t.id = c.active_ticket_id
+           WHERE c.id = $1 LIMIT 1`,
+          [parseInt(activeConv.id, 10)]
+        );
+        if (cRow.rows.length > 0 && cRow.rows[0].active_ticket_id && cRow.rows[0].id) {
+          const t = cRow.rows[0];
+          const st = String(t.status || "").toUpperCase();
+          if (st !== "CLOSED" && st !== "CANCELLED") {
+            canonicalActiveTicketId = Number(t.id);
+            canonicalActiveTicket = {
+              id: t.id,
+              ticketNumber: t.ticket_number,
+              status: t.status,
+              subject: t.subject,
+              priority: t.priority
+            };
+          }
+        }
+      } catch {}
+
       return reply.code(200).send({
         conversationId: activeConv.id,
+        activeTicketId: canonicalActiveTicketId ? String(canonicalActiveTicketId) : null,
+        activeTicket: canonicalActiveTicket,
         messages: messagesWithAttachments,
         // Additive: existing clients read only `conversationId` and `messages`.
         // `nextCursor` is the oldest id in this page — pass it back as `before`
@@ -694,10 +761,16 @@ export default async function WebChatGateway(fastify: FastifyInstance) {
 
       let resolvedProj = decoded.projectId;
       let resolvedComp = decoded.companyId;
+      // Project 1 is the "no verified project yet" sentinel, not a project a
+      // customer can work in: the message handler refuses to accept anything
+      // for it and prompts for a join code instead (see the fail-closed tenant
+      // policy below). Treating it as unset here is therefore correct — it lets
+      // a session whose token still carries the sentinel discover the real
+      // project it already has a conversation in.
       if (!resolvedProj || resolvedProj === "1") {
         try {
           const authCheck = await pool.query(
-            `SELECT c.project_id, p.company_id 
+            `SELECT c.project_id, p.company_id
              FROM conversations c
              JOIN projects p ON p.id = c.project_id
              WHERE (c.identity_id::text = $1 OR c.identity_id IN (SELECT id FROM identities WHERE channel_ref = $2))
@@ -715,8 +788,23 @@ export default async function WebChatGateway(fastify: FastifyInstance) {
       wsTickets.set(ticketId, {
         identityId: String(decoded.identityId || decoded.customerId || decoded.profileId || "guest"),
         profileId: String(decoded.profileId || "guest"),
-        companyId: String(resolvedComp || "101"),
-        projectId: String(resolvedProj || "101"),
+        // Unresolvable scope falls back to the sentinel, never to a real tenant.
+        //
+        // These defaulted to "101" — a real, populated project. A token that
+        // never went through the handshake carries no `projectId`, and the
+        // lookup above only resolves one when the identity already has an open
+        // conversation; with neither, the socket was handed project 101. The
+        // fail-closed gate below keys on project "1", so it never fired, and an
+        // identity holding ZERO `profile_projects` rows could open a
+        // conversation in 101 and persist messages there (measured: identity
+        // 100232 -> conversation 100002, message 3085).
+        //
+        // "1" is the documented "no verified project yet" sentinel, so an
+        // unresolvable session now lands where the existing policy already
+        // refuses it and asks for a join code. Nothing changes for a session
+        // that does carry a project, including a legitimate project 101.
+        companyId: String(resolvedComp || "1"),
+        projectId: String(resolvedProj || "1"),
         channelRef: String(decoded.channelRef || decoded.customerId || decoded.identityId || "guest"),
         role: decoded.role === "customer" ? "customer" : "guest",
         expiresAt: Date.now() + ttlMs,
@@ -762,7 +850,7 @@ export default async function WebChatGateway(fastify: FastifyInstance) {
       return;
     }
 
-    const { identityId, projectId, companyId, channelRef } = ticketData;
+    const { identityId, profileId, projectId, companyId, channelRef } = ticketData;
     let room = "";
     const joinedRooms = new Set<string>();
     const joinRoom = (r: string) => {
@@ -800,6 +888,87 @@ export default async function WebChatGateway(fastify: FastifyInstance) {
               }
             }, socket);
           }
+          return;
+        }
+
+        // 1.1 Handle Switch Ticket Event via WebSocket
+        if (payload.event === "switch_ticket" || payload.action === "switch_ticket") {
+          const rawId = payload.data?.ticketId ?? payload.ticketId;
+          const targetTicketStr = rawId !== undefined && rawId !== null ? String(rawId).trim() : null;
+
+          let switchedTicketId: number | null = null;
+          let switchedTicketNum: string | null = null;
+
+          if (targetTicketStr) {
+            try {
+              const tRes = await pool.query(
+                `SELECT t.id, t.project_id, t.status, t.ticket_number, c.identity_id, i.profile_id
+                 FROM tickets t
+                 LEFT JOIN conversations c ON c.id = t.conversation_id
+                 LEFT JOIN identities i ON i.id = c.identity_id
+                 WHERE (t.id::text = $1 OR t.ticket_number = $1 OR t.ticket_id = $1)
+                   AND t.deleted_at IS NULL
+                 LIMIT 1`,
+                [targetTicketStr]
+              );
+              if (tRes.rows.length > 0) {
+                const tRow = tRes.rows[0];
+                const isSameProj = Number(tRow.project_id) === Number(projectId);
+                const isOwner = (
+                  String(tRow.identity_id) === String(identityId) ||
+                  (profileId && profileId !== "guest" && String(tRow.profile_id) === String(profileId)) ||
+                  (channelRef && String(tRow.identity_id) === String(channelRef))
+                );
+                const isNotClosed = !["CLOSED", "CANCELLED"].includes(String(tRow.status || "").toUpperCase());
+
+                if (isSameProj && (isOwner || !tRow.identity_id) && isNotClosed) {
+                  switchedTicketId = Number(tRow.id);
+                  switchedTicketNum = tRow.ticket_number;
+                } else {
+                  logger.warn({ targetTicketStr, isSameProj, isOwner, status: tRow.status }, "WebSocket switch_ticket rejected: out of scope or closed");
+                }
+              }
+            } catch {}
+
+            if (!switchedTicketId) {
+              socket.send(JSON.stringify({
+                event: "error",
+                error: "Not Found",
+                code: "TICKET_NOT_FOUND_OR_FORBIDDEN",
+                message: "Ticket not found, out of project scope, or inaccessible"
+              }));
+              return;
+            }
+          }
+
+          let convId: number | null = null;
+          try {
+            const cRes = await pool.query(
+              `SELECT id FROM conversations
+               WHERE (identity_id::text = $1 OR identity_id IN (SELECT id FROM identities WHERE channel_ref = $2))
+                 AND project_id = $3
+                 AND status = 'open'
+               ORDER BY id DESC LIMIT 1`,
+              [identityId, channelRef, parseInt(String(projectId), 10)]
+            );
+            if (cRes.rows.length > 0) {
+              convId = cRes.rows[0].id;
+              await pool.query(
+                `UPDATE conversations SET active_ticket_id = $1, updated_at = NOW() WHERE id = $2`,
+                [switchedTicketId, convId]
+              );
+            }
+          } catch {}
+
+          socket.send(JSON.stringify({
+            event: "active_ticket_switched",
+            data: {
+              activeTicketId: switchedTicketId,
+              ticketNumber: switchedTicketNum,
+              conversationId: convId ? String(convId) : undefined,
+              projectId: Number(projectId),
+            }
+          }));
           return;
         }
 
@@ -867,6 +1036,98 @@ export default async function WebChatGateway(fastify: FastifyInstance) {
             }
           }
 
+          if (postbackVal.startsWith("cancel_confirm:")) {
+            const ticketNum = postbackVal.replace(/^cancel_confirm:/, "").trim();
+            try {
+              const tRes = await pool.query(
+                `SELECT id, ticket_number, status, project_id FROM tickets
+                 WHERE UPPER(ticket_number) = UPPER($1) AND deleted_at IS NULL LIMIT 1`,
+                [ticketNum]
+              );
+              if (tRes.rows.length > 0) {
+                const tRow = tRes.rows[0];
+                const stateMachine = new TicketStateMachine();
+                const transRes = await stateMachine.transition({
+                  ticketRef: tRow.id,
+                  to: "CANCELLED",
+                  actor: "customer",
+                  actorRef: channelRef,
+                  reason: "Customer confirmed cancellation via WebChat",
+                });
+
+                if (transRes.applied || transRes.code === "NO_OP") {
+                  await pool.query(
+                    `UPDATE conversations SET active_ticket_id = NULL, updated_at = NOW() WHERE active_ticket_id = $1`,
+                    [tRow.id]
+                  );
+
+                  broadcastWebChatOutbound({
+                    event: "ticket_updated",
+                    data: {
+                      ticketId: tRow.id,
+                      ticketNumber: tRow.ticket_number,
+                      status: "CANCELLED",
+                      updatedAt: new Date().toISOString(),
+                    },
+                    recipientId: channelRef,
+                  });
+
+                  const cancelReplyText = `ยกเลิกตั๋ว ${tRow.ticket_number} เรียบร้อยแล้วค่ะ`;
+                  let cancelMsgId: number | null = null;
+                  if (activeConvId > 0) {
+                    const ins = await pool.query(
+                      `INSERT INTO messages (conversation_id, role, content, message_type, message_purpose, created_at)
+                       VALUES ($1, 'ai', $2, 'text', 'pre_router', NOW())
+                       RETURNING id`,
+                      [activeConvId, cancelReplyText]
+                    );
+                    cancelMsgId = ins.rows[0]?.id ? Number(ins.rows[0].id) : null;
+                  }
+
+                  broadcastWebChatOutbound({
+                    conversationId: activeConvId > 0 ? String(activeConvId) : undefined,
+                    recipientId: channelRef,
+                    id: cancelMsgId ? String(cancelMsgId) : randomUUID(),
+                    externalId: cancelMsgId ? String(cancelMsgId) : undefined,
+                    messageId: cancelMsgId ?? undefined,
+                    text: cancelReplyText,
+                    role: "ai" as const,
+                    sentAt: new Date().toISOString(),
+                  });
+                  return;
+                }
+              }
+            } catch (cancelErr: any) {
+              logger.warn({ error: cancelErr.message, ticketNum }, "Failed processing cancel_confirm postback");
+            }
+          }
+
+          if (postbackVal.startsWith("cancel_decline:")) {
+            const ticketNum = postbackVal.replace(/^cancel_decline:/, "").trim();
+            const declineReplyText = `รับทราบค่ะ ระบบยังคงดำเนินการต่อสำหรับตั๋ว ${ticketNum} นะคะ`;
+            let declineMsgId: number | null = null;
+            if (activeConvId > 0) {
+              const ins = await pool.query(
+                `INSERT INTO messages (conversation_id, role, content, message_type, message_purpose, created_at)
+                 VALUES ($1, 'ai', $2, 'text', 'pre_router', NOW())
+                 RETURNING id`,
+                [activeConvId, declineReplyText]
+              );
+              declineMsgId = ins.rows[0]?.id ? Number(ins.rows[0].id) : null;
+            }
+            broadcastWebChatOutbound({
+              conversationId: activeConvId > 0 ? String(activeConvId) : undefined,
+              recipientId: channelRef,
+              id: declineMsgId ? String(declineMsgId) : randomUUID(),
+              externalId: declineMsgId ? String(declineMsgId) : undefined,
+              messageId: declineMsgId ?? undefined,
+              text: declineReplyText,
+              role: "ai" as const,
+              sentAt: new Date().toISOString(),
+            });
+            return;
+          }
+
           const resolved = resolvePostback(postbackVal);
           if (!resolved) {
             logger.warn({ postback: postbackVal }, "Unknown WebChat postback ignored");
@@ -914,7 +1175,10 @@ export default async function WebChatGateway(fastify: FastifyInstance) {
         const IncomingMessageSchema = z.object({
           text: z.string().optional().default(""),
           tempId: z.string().optional(),
-          attachments: z.array(IncomingAttachmentSchema).optional().default([])
+          attachments: z.array(IncomingAttachmentSchema).optional().default([]),
+          activeTicketId: z.union([z.string(), z.number()]).optional().nullable(),
+          ticketNumber: z.string().optional().nullable(),
+          externalId: z.string().optional(),
         });
 
         const parsed = IncomingMessageSchema.safeParse(payload);
@@ -933,7 +1197,7 @@ export default async function WebChatGateway(fastify: FastifyInstance) {
 
         const messageText = rawText || (attachments[0]?.fileName ? `[ไฟล์แนบ: ${attachments[0].fileName}]` : '[ไฟล์แนบ]');
         const messageType = attachments.length > 0 ? (attachments[0].fileType?.startsWith("image/") || attachments[0].fileUrl?.match(/\.(jpeg|jpg|png|webp|gif)/i) ? "image" : "file") : "text";
-        const externalId = (parsed.data.tempId && parsed.data.tempId.trim()) ? parsed.data.tempId.trim() : `webchat_${Date.now()}_${randomUUID().slice(0, 8)}`;
+        const externalId = (parsed.data.tempId && parsed.data.tempId.trim()) ? parsed.data.tempId.trim() : (parsed.data.externalId && parsed.data.externalId.trim()) ? parsed.data.externalId.trim() : `webchat_${Date.now()}_${randomUUID().slice(0, 8)}`;
         const tempId = externalId;
 
         // Ensure active conversation exists on message send
@@ -950,6 +1214,88 @@ export default async function WebChatGateway(fastify: FastifyInstance) {
             channel: "WebChat"
           });
           await conversationRepo.save(conversation);
+        }
+
+        // Validate and authorize active ticket context
+        let validatedTicketId: number | null = null;
+        let validatedTicketNumber: string | null = null;
+        const candidateTicketId = parsed.data.activeTicketId !== undefined && parsed.data.activeTicketId !== null
+          ? String(parsed.data.activeTicketId).trim()
+          : null;
+
+        if (candidateTicketId) {
+          try {
+            const tRes = await pool.query(
+              `SELECT t.id, t.project_id, t.status, t.ticket_number, c.identity_id, i.profile_id
+               FROM tickets t
+               LEFT JOIN conversations c ON c.id = t.conversation_id
+               LEFT JOIN identities i ON i.id = c.identity_id
+               WHERE (t.id::text = $1 OR t.ticket_number = $1 OR t.ticket_id = $1)
+                 AND t.deleted_at IS NULL
+               LIMIT 1`,
+              [candidateTicketId]
+            );
+            if (tRes.rows.length > 0) {
+              const tRow = tRes.rows[0];
+              const isSameProject = Number(tRow.project_id) === Number(projectId);
+              const isOwner = (
+                String(tRow.identity_id) === String(identityId) ||
+                (profileId && profileId !== "guest" && String(tRow.profile_id) === String(profileId)) ||
+                (channelRef && String(tRow.identity_id) === String(channelRef))
+              );
+              const isNotClosed = !["CLOSED", "CANCELLED"].includes(String(tRow.status || "").toUpperCase());
+
+              if (isSameProject && (isOwner || !tRow.identity_id) && isNotClosed) {
+                validatedTicketId = Number(tRow.id);
+                validatedTicketNumber = tRow.ticket_number;
+              } else {
+                logger.warn(
+                  { candidateTicketId, isSameProject, isOwner, status: tRow.status, projectId, identityId },
+                  "Active ticket context rejected: out of scope, unauthorized, or closed"
+                );
+              }
+            }
+          } catch (tErr: any) {
+            logger.warn({ error: tErr.message, candidateTicketId }, "Failed validating active ticket context");
+          }
+
+          if (!validatedTicketId) {
+            socket.send(JSON.stringify({
+              event: "error",
+              error: "Forbidden",
+              code: "UNAUTHORIZED_TICKET_CONTEXT",
+              message: "Active ticket context is unauthorized, out of project scope, or invalid"
+            }));
+            return;
+          }
+        }
+
+        // If no candidate was provided by client, check if conversation already has an active ticket
+        if (!validatedTicketId && conversation.activeTicketId) {
+          try {
+            const tCheck = await pool.query(
+              `SELECT id, ticket_number, status, project_id FROM tickets WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
+              [conversation.activeTicketId]
+            );
+            if (tCheck.rows.length > 0) {
+              const row = tCheck.rows[0];
+              if (Number(row.project_id) === Number(projectId) && !["CLOSED", "CANCELLED"].includes(String(row.status || "").toUpperCase())) {
+                validatedTicketId = Number(row.id);
+                validatedTicketNumber = row.ticket_number;
+              }
+            }
+          } catch {}
+        }
+
+        // Persist validated ticket focus pointer to conversation if different
+        if (validatedTicketId && conversation.activeTicketId !== validatedTicketId) {
+          try {
+            await pool.query(
+              `UPDATE conversations SET active_ticket_id = $1, updated_at = NOW() WHERE id = $2`,
+              [validatedTicketId, conversation.id]
+            );
+            conversation.setActiveTicketId(validatedTicketId);
+          } catch {}
         }
 
         const conversationId = conversation.id;
@@ -1209,8 +1555,9 @@ export default async function WebChatGateway(fastify: FastifyInstance) {
         const receivedAtStr = new Date().toISOString();
 
         // Check if customer has a valid, non-fallback project assigned
-        const currentConvRes = await pool.query(`SELECT project_id FROM conversations WHERE id = $1`, [conversationId]);
+        const currentConvRes = await pool.query(`SELECT project_id, org_id FROM conversations WHERE id = $1`, [conversationId]);
         const convProjectId = String(currentConvRes.rows[0]?.project_id || "");
+        const convOrgId = String(currentConvRes.rows[0]?.org_id || "org_default");
 
         // Fail-closed tenant policy: never guess or fall back to project 1
         if (!convProjectId || convProjectId === "1" || convProjectId === "undefined" || convProjectId === "null") {
@@ -1226,6 +1573,192 @@ export default async function WebChatGateway(fastify: FastifyInstance) {
             }
           }));
           return;
+        }
+
+        // Load authorized cases for multi-case intelligence and case switching
+        let authorizedOpenCases: any[] = [];
+        let authorizedClosedCases: any[] = [];
+        try {
+          const authCasesRes = await pool.query(
+            `SELECT t.id, t.ticket_number, t.ticket_id, t.subject, t.title, t.summary,
+                    t.running_summary, t.original_problem_statement, t.searchable_text,
+                    t.issue_category, t.status, t.created_at
+             FROM tickets t
+             LEFT JOIN conversations c ON c.id = t.conversation_id
+             LEFT JOIN identities i ON i.id = c.identity_id
+             WHERE t.project_id = $1
+               AND (
+                 t.conversation_id = $2
+                 OR c.identity_id::text = $3
+                 OR i.channel_ref = $4
+                 OR ($5 != 'guest' AND i.profile_id::text = $5)
+               )
+               AND t.deleted_at IS NULL
+             ORDER BY t.created_at ASC, t.id ASC`,
+            [
+              parseInt(convProjectId, 10),
+              conversationId,
+              identityId,
+              channelRef,
+              profileId || 'guest'
+            ]
+          );
+
+          for (const row of authCasesRes.rows) {
+            const st = String(row.status || "").toUpperCase();
+            if (st === "CLOSED" || st === "CANCELLED") {
+              authorizedClosedCases.push(row);
+            } else {
+              authorizedOpenCases.push(row);
+            }
+          }
+        } catch (casesErr: any) {
+          logger.warn({ error: casesErr.message, conversationId }, "Failed loading authorized cases for CaseResolver");
+        }
+
+        // Load recent conversation messages for conversational context
+        let recentMessages: any[] = [];
+        try {
+          const recentMsgsRes = await pool.query(
+            `SELECT id, role, content, ticket_id, created_at
+             FROM messages
+             WHERE conversation_id = $1
+             ORDER BY id DESC LIMIT 15`,
+            [conversationId]
+          );
+          recentMessages = (recentMsgsRes.rows || []).reverse();
+        } catch (msgErr: any) {
+          logger.warn({ error: msgErr.message, conversationId }, "Failed loading recent messages for CaseResolver");
+        }
+
+        // Multi-Case Case Resolution
+        const caseRes = caseResolver.resolve({
+          conversationId: parseInt(String(conversationId), 10),
+          activeTicketId: validatedTicketId,
+          messageText: rawText,
+          openCases: authorizedOpenCases,
+          closedCases: authorizedClosedCases,
+          recentMessages,
+          hasAttachments: Boolean(attachments && attachments.length > 0),
+        });
+
+        let edgeReplyText: string | null = null;
+        let edgeReplyActions: any[] | undefined = undefined;
+        let referencedTicketId: number | null = null;
+
+        if (caseRes.type === "CONTINUE_ACTIVE_CASE" && caseRes.ticketId) {
+          validatedTicketId = caseRes.ticketId;
+          if (caseRes.ticketNumber) {
+            validatedTicketNumber = caseRes.ticketNumber;
+          }
+        } else if (caseRes.type === "SWITCH_EXISTING_CASE" && caseRes.ticketId) {
+          const targetCase = authorizedOpenCases.find((c) => c.id === caseRes.ticketId);
+          if (targetCase) {
+            validatedTicketId = targetCase.id;
+            validatedTicketNumber = targetCase.ticket_number;
+            await pool.query(
+              `UPDATE conversations SET active_ticket_id = $1, updated_at = NOW() WHERE id = $2`,
+              [validatedTicketId, conversationId]
+            );
+            conversation.setActiveTicketId(validatedTicketId);
+            broadcastWebChatOutbound({
+              event: "active_ticket_switched",
+              data: {
+                ticketId: validatedTicketId,
+                ticketNumber: validatedTicketNumber,
+                conversationId: String(conversationId),
+                projectId: parseInt(convProjectId, 10),
+              },
+              recipientId: channelRef,
+            });
+            const displayNum = validatedTicketNumber || (targetCase.id ? `#${targetCase.id}` : "ที่เลือก");
+            edgeReplyText = `สลับมาที่เคส **${displayNum}** (${targetCase.subject || "เคสที่เลือก"}) ให้เรียบร้อยแล้วค่ะ มีข้อมูลเพิ่มเติมสามารถแจ้งได้เลยนะคะ`;
+          }
+        } else if (caseRes.type === "CLOSED_CASE_REFERENCE") {
+          // Hard Invariant: System MUST NOT write message to closed case and MUST NOT implicitly reopen it
+          validatedTicketId = null;
+          validatedTicketNumber = null;
+          referencedTicketId = caseRes.referencedTicketId ?? null;
+          edgeReplyText = caseRes.clarificationPrompt || "ตั๋วงานนี้ปิดเรียบร้อยแล้วค่ะ";
+          edgeReplyActions = caseRes.actions;
+
+          if (referencedTicketId) {
+            try {
+              await pool.query(
+                `INSERT INTO ticket_events (ticket_id, event_type, actor, source, payload, created_at)
+                 VALUES ($1, 'CLOSED_CASE_REFERENCED', 'customer', 'webchat_case_resolver', $2, NOW())`,
+                [
+                  referencedTicketId,
+                  JSON.stringify({
+                    conversation_id: conversationId,
+                    message_text: rawText,
+                    intent: "CLOSED_CASE_REFERENCE"
+                  })
+                ]
+              );
+            } catch (evtErr: any) {
+              logger.warn({ error: evtErr.message, referencedTicketId }, "Failed logging CLOSED_CASE_REFERENCED event");
+            }
+          }
+        } else if (caseRes.type === "AMBIGUOUS_CASE") {
+          // Hard Invariant: Ask clarification; do not mutate active_ticket_id or guess
+          validatedTicketId = null;
+          validatedTicketNumber = null;
+          edgeReplyText = caseRes.clarificationPrompt || "คุณลูกค้าหมายถึงเคสไหนคะ?";
+          edgeReplyActions = caseRes.actions;
+        } else if (caseRes.type === "NEW_CASE") {
+          const randomSuffix = Math.floor(10000 + Math.random() * 90000);
+          const newTicketNum = `TCK-${new Date().getFullYear()}-${randomSuffix}`;
+          const newSub = caseRes.initialSubject || "ปัญหาใหม่จากลูกค้า";
+          try {
+            const insRes = await pool.query(
+              `INSERT INTO tickets (ticket_number, ticket_id, conversation_id, project_id, org_id, subject, summary, status, plane_status, priority, created_via, lifecycle_changed_at, created_at)
+               VALUES ($1, $1, $2, $3, $4, $5, $6, 'NEW', 'Backlog', 'Medium', 'customer', NOW(), NOW())
+               RETURNING id, ticket_number, subject`,
+              [newTicketNum, conversationId, parseInt(convProjectId, 10), convOrgId || "org_default", newSub, rawText]
+            );
+            if (insRes.rows.length > 0) {
+              const createdTicket = insRes.rows[0];
+              const newTicketId = Number(createdTicket.id);
+
+              await pool.query(
+                `UPDATE conversations SET active_ticket_id = $1, updated_at = NOW() WHERE id = $2`,
+                [newTicketId, conversationId]
+              );
+              conversation.setActiveTicketId(newTicketId);
+              validatedTicketId = newTicketId;
+              validatedTicketNumber = createdTicket.ticket_number;
+
+              broadcastWebChatOutbound({
+                event: "ticket_created",
+                data: {
+                  ticketId: newTicketId,
+                  ticketNumber: createdTicket.ticket_number,
+                  conversationId: String(conversationId),
+                  projectId: parseInt(convProjectId, 10),
+                  status: "NEW",
+                  subject: createdTicket.subject,
+                  createdAt: new Date().toISOString(),
+                },
+                recipientId: channelRef,
+              });
+
+              broadcastWebChatOutbound({
+                event: "active_ticket_switched",
+                data: {
+                  ticketId: newTicketId,
+                  ticketNumber: createdTicket.ticket_number,
+                  conversationId: String(conversationId),
+                  projectId: parseInt(convProjectId, 10),
+                },
+                recipientId: channelRef,
+              });
+
+              edgeReplyText = `เปิดเคสใหม่หมายเลข **${createdTicket.ticket_number}** ("${createdTicket.subject}") ให้เรียบร้อยแล้วค่ะ ท่านสามารถแจ้งรายละเอียดหรือส่งรูปภาพเพิ่มเติมได้เลยนะคะ`;
+            }
+          } catch (createErr: any) {
+            logger.error({ error: createErr.message, conversationId }, "Failed auto-creating new case from CaseResolver");
+          }
         }
 
         // 2. Check Human Takeover Gate before forwarding to AI
@@ -1247,13 +1780,18 @@ export default async function WebChatGateway(fastify: FastifyInstance) {
         let insertedMessageId: number | null = null;
         if (conversationId) {
           try {
+            const msgReactions = referencedTicketId
+              ? JSON.stringify({ referenced_ticket_id: referencedTicketId, intent: "CLOSED_CASE_REFERENCE" })
+              : null;
             const insertRes = await pool.query(
-              `INSERT INTO messages (conversation_id, role, content, message_type, external_id, created_at)
-               VALUES ($1, 'customer', $2, $3, $4, NOW())
+              `INSERT INTO messages (conversation_id, role, content, message_type, external_id, ticket_id, reactions, created_at)
+               VALUES ($1, 'customer', $2, $3, $4, $5, $6, NOW())
                ON CONFLICT (conversation_id, external_id) DO UPDATE SET
-                 content = EXCLUDED.content
-               RETURNING id`,
-              [conversationId, messageText, messageType, externalId]
+                 content = EXCLUDED.content,
+                 ticket_id = COALESCE(EXCLUDED.ticket_id, messages.ticket_id),
+                 reactions = COALESCE(EXCLUDED.reactions, messages.reactions)
+               RETURNING id, ticket_id`,
+              [conversationId, messageText, messageType, externalId, validatedTicketId || null, msgReactions]
             );
             if (insertRes.rows.length > 0) {
               insertedMessageId = insertRes.rows[0].id;
@@ -1273,6 +1811,10 @@ export default async function WebChatGateway(fastify: FastifyInstance) {
         if (insertedMessageId && attachments.length > 0) {
           for (const att of attachments) {
             try {
+              const attMetadata = JSON.stringify({
+                activeTicketId: validatedTicketId,
+                ticketNumber: validatedTicketNumber || parsed.data.ticketNumber || undefined
+              });
               await pool.query(
                 `INSERT INTO message_attachments (message_id, file_url, thumbnail_url, file_name, file_type, file_size, storage_key, attachment_status, metadata, created_at)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, 'READY', $8, NOW())`,
@@ -1284,7 +1826,7 @@ export default async function WebChatGateway(fastify: FastifyInstance) {
                   att.fileType || (att.fileUrl.match(/\.(png|jpg|jpeg|webp|gif)/i) ? 'image/jpeg' : 'application/octet-stream'),
                   att.fileSize || 0,
                   att.storageKey || null,
-                  JSON.stringify({})
+                  attMetadata
                 ]
               );
             } catch (attErr: any) {
@@ -1300,10 +1842,15 @@ export default async function WebChatGateway(fastify: FastifyInstance) {
           data: {
             id: insertedMessageId ? String(insertedMessageId) : externalId,
             externalId,
+            // Carried for the same reason as the outbound builders: the client
+            // filters on it, and this payload is also the send acknowledgement.
+            conversationId: String(conversationId),
             role: "customer",
             content: messageText,
             createdAt: receivedAtStr,
-            attachments
+            attachments,
+            activeTicketId: validatedTicketId ? String(validatedTicketId) : undefined,
+            ticketNumber: validatedTicketNumber || parsed.data.ticketNumber || undefined
           }
         };
 
@@ -1328,6 +1875,40 @@ export default async function WebChatGateway(fastify: FastifyInstance) {
         // by `externalId`, so a repeat is dropped by identity rather than by
         // content.
         broadcastToRooms([room, recipientRoom], clientMsgPayload);
+
+        // If CaseResolver handled the turn (switch case, closed case warning, ambiguity clarification, or new case confirmation)
+        if (edgeReplyText) {
+          let aiMsgId: number | null = null;
+          try {
+            const aiInsertRes = await pool.query(
+              `INSERT INTO messages (conversation_id, role, content, message_type, message_purpose, ticket_id, created_at)
+               VALUES ($1, 'ai', $2, 'text', 'case_resolver', $3, NOW())
+               RETURNING id`,
+              [conversationId, edgeReplyText, validatedTicketId || null]
+            );
+            aiMsgId = aiInsertRes.rows[0]?.id ? Number(aiInsertRes.rows[0].id) : null;
+          } catch (aiErr: any) {
+            logger.warn({ error: aiErr.message, conversationId }, "Failed persisting case resolver AI reply");
+          }
+
+          const outPayload = {
+            conversationId: String(conversationId),
+            recipientId: channelRef,
+            channel: "WebChat" as const,
+            id: aiMsgId ? String(aiMsgId) : randomUUID(),
+            externalId: aiMsgId ? String(aiMsgId) : undefined,
+            messageId: aiMsgId ?? undefined,
+            text: edgeReplyText,
+            role: "ai" as const,
+            sentAt: new Date().toISOString(),
+            actions: edgeReplyActions,
+            activeTicketId: validatedTicketId ? String(validatedTicketId) : undefined,
+            ticketNumber: validatedTicketNumber || undefined,
+          };
+
+          broadcastWebChatOutbound(outPayload);
+          return;
+        }
 
         // 6. If human takeover is active: notify operator in console and DO NOT enqueue to BullMQ / PromptX!
         if (isHumanTakeover) {
@@ -1619,6 +2200,10 @@ export function broadcastWebChatOutbound(payload: {
     data: {
       id: resolvedId,
       externalId: resolvedExternalId,
+      // See the Redis-side builder above: `recipient:<channelRef>` is
+      // identity-scoped, so the client needs the conversation to reject a
+      // message belonging to another project's conversation.
+      conversationId: payload.conversationId ? String(payload.conversationId) : undefined,
       role: payload.role || "ai",
       content: payload.text || payload.content || "",
       createdAt: payload.sentAt || new Date().toISOString(),

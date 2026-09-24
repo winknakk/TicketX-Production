@@ -1,6 +1,6 @@
 import { useEffect, useRef, useReducer, useCallback, useState } from 'react';
 import { API_BASE_URL } from '../../../lib/apiBaseUrl';
-import type { CustomerMessageAttachment } from '../types';
+import type { CustomerMessageAttachment, CustomerTicket } from '../types';
 import { useCustomerSession } from '../auth/CustomerSessionContext';
 import { customerApi } from '../api/customerApi';
 import { setCustomerToken } from '../auth/customerSession';
@@ -13,6 +13,7 @@ const RECONNECT_MAX_MS = 30_000;
 const MAX_TICKET_ATTEMPTS = 5;
 
 const ACK_TIMEOUT_MS = 15_000;
+const ACTIVE_TICKET_STORAGE_KEY = 'ticketx_active_ticket_id';
 
 /**
  * Owns the customer's socket and the single chat store.
@@ -54,10 +55,91 @@ export function useCustomerSocket() {
    */
   const ackTimersRef = useRef<Map<string, number>>(new Map());
 
+  /**
+   * Synchronous reference to the currently active ticket.
+   * Invariant: A -> B -> immediate send MUST use B even before React rerenders
+   * or async state flushes. This ref is updated immediately on selectActiveTicket.
+   */
+  const activeTicketRef = useRef<CustomerTicket | null>(null);
+  const availableTicketsRef = useRef<CustomerTicket[]>([]);
+
+  // Keep activeTicketRef and availableTicketsRef in sync with state
+  useEffect(() => {
+    activeTicketRef.current = state.activeTicket;
+  }, [state.activeTicket]);
+
+  useEffect(() => {
+    availableTicketsRef.current = state.availableTickets;
+  }, [state.availableTickets]);
+
   const revokePreviews = useCallback((urls: string[]) => {
     urls.forEach((u) => {
       if (u.startsWith('blob:')) URL.revokeObjectURL(u);
     });
+  }, []);
+
+  /**
+   * Authoritative ticket refresh & session restoration:
+   * 1. Fetches backend tickets via /api/portal/tickets
+   * 2. Validates stored active ticket against fresh backend list
+   * 3. sessionStorage NEVER grants authorization: if the ticket is not returned by the backend,
+   *    it is discarded and cleared from sessionStorage.
+   */
+  const loadAvailableTickets = useCallback(async () => {
+    if (!token) return;
+    try {
+      const tickets = await customerApi.getTickets();
+      availableTicketsRef.current = tickets;
+      dispatch({ type: 'SET_AVAILABLE_TICKETS', tickets });
+
+      const savedTicketId = sessionStorage.getItem(ACTIVE_TICKET_STORAGE_KEY);
+      if (savedTicketId) {
+        const found = tickets.find(
+          (t) =>
+            String(t.id) === savedTicketId ||
+            t.ticket_number === savedTicketId ||
+            (t as any).ticket_id === savedTicketId ||
+            (t as any).ticketId === savedTicketId
+        );
+        if (found) {
+          activeTicketRef.current = found;
+          dispatch({ type: 'SET_ACTIVE_TICKET', ticket: found });
+        } else {
+          // Backend did not return this ticket — discard unauthorized or expired focus
+          sessionStorage.removeItem(ACTIVE_TICKET_STORAGE_KEY);
+          if (activeTicketRef.current && (String(activeTicketRef.current.id) === savedTicketId || activeTicketRef.current.ticket_number === savedTicketId)) {
+            activeTicketRef.current = null;
+            dispatch({ type: 'SET_ACTIVE_TICKET', ticket: null });
+          }
+        }
+      }
+    } catch {
+      // Non-blocking: fail gracefully
+    }
+  }, [token]);
+
+  const selectActiveTicket = useCallback((ticket: CustomerTicket | null) => {
+    console.log('[selectActiveTicket] selected ticket:', ticket?.id, ticket?.ticket_number);
+    // Invariant: Immediate synchronous update to ref to prevent stale closures on rapid send
+    activeTicketRef.current = ticket;
+    if (ticket) {
+      sessionStorage.setItem(ACTIVE_TICKET_STORAGE_KEY, String(ticket.id));
+    } else {
+      sessionStorage.removeItem(ACTIVE_TICKET_STORAGE_KEY);
+    }
+    dispatch({ type: 'SET_ACTIVE_TICKET', ticket });
+
+    // Authoritatively notify backend via WebSocket and HTTP switch-ticket contracts
+    try {
+      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+        socketRef.current.send(JSON.stringify({
+          event: 'switch_ticket',
+          data: { ticketId: ticket ? ticket.id : null }
+        }));
+      }
+    } catch {}
+
+    customerApi.switchTicket(ticket ? ticket.id : null).catch(() => {});
   }, []);
 
   const loadMessages = useCallback(async () => {
@@ -78,8 +160,11 @@ export function useCustomerSocket() {
   }, [token]);
 
   useEffect(() => {
-    if (token) loadMessages();
-  }, [token, loadMessages]);
+    if (token) {
+      loadMessages();
+      loadAvailableTickets();
+    }
+  }, [token, loadMessages, loadAvailableTickets]);
 
   // Socket lifecycle.
   useEffect(() => {
@@ -248,6 +333,90 @@ export function useCustomerSocket() {
                 setCustomerToken(data.token, 'customer');
               }
               window.dispatchEvent(new CustomEvent('ticketx:project_switched', { detail: normalized.data }));
+              loadAvailableTickets();
+              break;
+            }
+
+            case 'TICKET_EVENT': {
+              const data = normalized.data as Record<string, any>;
+              const ticketId = data.ticketId || data.ticket_id || data.id;
+              const status = data.status || data.state;
+              const ticketNumber = data.ticketNumber || data.ticket_number;
+              const detail = data.detail || data.summary || data.message;
+              if (ticketId && status) {
+                dispatch({
+                  type: 'TICKET_UPDATED',
+                  ticketId,
+                  status,
+                  ticketNumber,
+                  detail,
+                });
+              }
+              loadAvailableTickets();
+              break;
+            }
+
+            case 'TICKET_SWITCHED': {
+              const data = (normalized.data || {}) as {
+                activeTicketId?: number | string | null;
+                ticketId?: number | string | null;
+                ticketNumber?: string | null;
+              };
+              const rawId =
+                data.activeTicketId !== undefined && data.activeTicketId !== null
+                  ? data.activeTicketId
+                  : data.ticketId !== undefined && data.ticketId !== null
+                    ? data.ticketId
+                    : (data as any).ticket_id;
+
+              if (rawId) {
+                const targetId = String(rawId);
+                const currentList = availableTicketsRef.current.length > 0 ? availableTicketsRef.current : state.availableTickets;
+                const found = currentList.find(
+                  (t) =>
+                    String(t.id) === targetId ||
+                    t.ticket_number === targetId ||
+                    (t as any).ticket_id === targetId ||
+                    (t as any).ticketId === targetId
+                );
+                if (found) {
+                  activeTicketRef.current = found;
+                  dispatch({ type: 'SET_ACTIVE_TICKET', ticket: found });
+                } else if (
+                  activeTicketRef.current &&
+                  (String(activeTicketRef.current.id) === targetId ||
+                    activeTicketRef.current.ticket_number === targetId ||
+                    (activeTicketRef.current as any).ticket_id === targetId ||
+                    (activeTicketRef.current as any).ticketId === targetId)
+                ) {
+                  // Active ticket ref already matches the target ID; preserve it
+                  dispatch({ type: 'SET_ACTIVE_TICKET', ticket: activeTicketRef.current });
+                } else {
+                  // Fetch fresh tickets to locate the switched ticket
+                  customerApi
+                    .getTickets()
+                    .then((fresh) => {
+                      availableTicketsRef.current = fresh;
+                      dispatch({ type: 'SET_AVAILABLE_TICKETS', tickets: fresh });
+                      const newlyFound = fresh.find(
+                        (t) =>
+                          String(t.id) === targetId ||
+                          t.ticket_number === targetId ||
+                          (t as any).ticket_id === targetId ||
+                          (t as any).ticketId === targetId
+                      );
+                      if (newlyFound) {
+                        activeTicketRef.current = newlyFound;
+                        dispatch({ type: 'SET_ACTIVE_TICKET', ticket: newlyFound });
+                      }
+                    })
+                    .catch(() => {});
+                }
+              } else if (data.activeTicketId === null || data.ticketId === null) {
+                // Explicitly unselected
+                activeTicketRef.current = null;
+                dispatch({ type: 'SET_ACTIVE_TICKET', ticket: null });
+              }
               break;
             }
 
@@ -343,6 +512,8 @@ export function useCustomerSocket() {
       const tempId = existingTempId || `temp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       let localPreviews: CustomerMessageAttachment[] = [];
 
+      const currentActiveTicket = activeTicketRef.current;
+
       if (existingTempId) {
         dispatch({ type: 'OPTIMISTIC_RETRY', tempId });
       } else {
@@ -365,6 +536,8 @@ export function useCustomerSocket() {
             attachments: localPreviews,
             deliveryStatus: 'sending',
             pending: true,
+            activeTicketId: currentActiveTicket ? currentActiveTicket.id : undefined,
+            ticketNumber: currentActiveTicket?.ticket_number || undefined,
           },
         });
       }
@@ -453,6 +626,8 @@ export function useCustomerSocket() {
               // ignores this field. It is sent so the portal needs no change on
               // the day the backend starts accepting it.
               attachments: deliverable.length > 0 ? deliverable : undefined,
+              activeTicketId: currentActiveTicket ? currentActiveTicket.id : undefined,
+              ticketNumber: currentActiveTicket?.ticket_number || undefined,
             })
           );
           // Invariant: socket.send() returning does NOT mean the message is delivered.
@@ -530,18 +705,114 @@ export function useCustomerSocket() {
     [sendMessage]
   );
 
+  /**
+   * Request cancellation for active or specified ticket
+   */
+  const requestCancelTicket = useCallback((ticketNumber?: string, ticketId?: number | string) => {
+    console.log('[requestCancelTicket] called. activeTicketRef:', activeTicketRef.current?.id, 'args:', { ticketNumber, ticketId });
+    let num = ticketNumber || activeTicketRef.current?.ticket_number || activeTicketRef.current?.ticket_id || '';
+    let id = ticketId || activeTicketRef.current?.id;
+    if (!num && state.availableTickets.length > 0) {
+      const firstTicket = state.availableTickets[0];
+      num = firstTicket.ticket_number || firstTicket.ticket_id || String(firstTicket.id);
+      id = firstTicket.id;
+    }
+    if (num) {
+      dispatch({ type: 'CANCEL_REQUESTED', ticketNumber: num, ticketId: id });
+    } else {
+      // General cancel request prompt
+      dispatch({ type: 'CANCEL_REQUESTED', ticketNumber: 'GENERAL', ticketId: undefined });
+    }
+  }, [state.availableTickets]);
+
+  /**
+   * Confirm cancellation of ticket
+   */
+  const confirmCancelTicket = useCallback(async () => {
+    const targetTicket = activeTicketRef.current;
+    const ticketId = state.cancellationState.ticketId || targetTicket?.id;
+    const ticketNumber = state.cancellationState.ticketNumber || targetTicket?.ticket_number || targetTicket?.ticket_id || '';
+    console.log('[confirmCancelTicket] ticketId:', ticketId, 'ticketNumber:', ticketNumber);
+
+    try {
+      if (ticketId) {
+        try {
+          const res = await customerApi.transitionTicket(ticketId, 'CANCELLED', 'Customer requested cancellation');
+          console.log('[confirmCancelTicket] transitionTicket success:', res);
+        } catch (tErr) {
+          console.error('[confirmCancelTicket] transitionTicket error:', tErr);
+        }
+      }
+      sendPostback(`cancel_confirm:${ticketNumber}`);
+      dispatch({ type: 'CANCEL_CONFIRMED', message: `ยกเลิกตั๋ว ${ticketNumber} เรียบร้อยแล้วค่ะ` });
+      loadAvailableTickets();
+    } catch (err: any) {
+      console.error('[confirmCancelTicket] general error:', err);
+      dispatch({ type: 'CANCEL_FAILED', error: err?.message || 'ไม่สามารถยกเลิกตั๋วได้ในขณะนี้' });
+    }
+  }, [state.cancellationState, sendPostback, loadAvailableTickets]);
+
+  /**
+   * Decline cancellation of ticket
+   */
+  const declineCancelTicket = useCallback(() => {
+    const ticketNumber = state.cancellationState.ticketNumber || activeTicketRef.current?.ticket_number || activeTicketRef.current?.ticket_id || '';
+    sendPostback(`cancel_decline:${ticketNumber}`);
+    dispatch({ type: 'CANCEL_DECLINED', message: `ยังคงดำเนินการต่อสำหรับตั๋ว ${ticketNumber} ค่ะ` });
+  }, [state.cancellationState, sendPostback]);
+
+  /**
+   * Respond to Dev-CS WAITING_FOR_CUSTOMER state
+   */
+  const respondToWaiting = useCallback(async (action: 'CLOSE' | 'REPLY', content?: string) => {
+    const targetTicket = activeTicketRef.current;
+    const ticketId = targetTicket?.id;
+
+    if (action === 'CLOSE') {
+      if (ticketId) {
+        try {
+          const currentStatus = (targetTicket?.status || '').toUpperCase();
+          const targetStatus = currentStatus === 'WAITING_CUSTOMER' ? 'CANCELLED' : 'CUSTOMER_CONFIRMED';
+          await customerApi.transitionTicket(ticketId, targetStatus, 'Customer closed case');
+        } catch {
+          // Fallback
+        }
+      }
+      sendPostback('close_case');
+      dispatch({ type: 'SET_WORKFLOW_STATE', state: 'CLOSED' });
+      loadAvailableTickets();
+    } else {
+      // Customer provided additional info or replied
+      if (content) {
+        await sendMessage(content);
+      }
+      dispatch({ type: 'SET_WORKFLOW_STATE', state: 'CUSTOMER_RESPONDED' });
+    }
+  }, [sendMessage, sendPostback, loadAvailableTickets]);
+
   return {
     entries: state.entries,
     conversationId: state.conversationId,
     isTyping: state.isTyping,
     isHumanTakeover: state.isHumanTakeover,
+    activeTicket: state.activeTicket,
+    availableTickets: state.availableTickets,
+    cancellationState: state.cancellationState,
+    customerWorkflowState: state.customerWorkflowState,
+    waitingRequestDetail: state.waitingRequestDetail,
     isConnected,
     isSending,
+    selectActiveTicket,
     sendMessage,
     sendPostback,
     retrySend,
+    requestCancelTicket,
+    confirmCancelTicket,
+    declineCancelTicket,
+    respondToWaiting,
     pendingAction,
     reloadMessages: loadMessages,
+    reloadTickets: loadAvailableTickets,
   };
 }
 

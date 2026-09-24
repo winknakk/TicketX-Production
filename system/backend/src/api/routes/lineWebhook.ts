@@ -27,6 +27,9 @@ import { LineMessageBatchingService } from "../../services/LineMessageBatchingSe
 import { AgentSessionQueueService } from "../../services/AgentSessionQueueService";
 import { AgentSessionQueueWorker } from "../../services/AgentSessionQueueWorker";
 import { LineTypingIndicatorService } from "../../services/LineTypingIndicatorService";
+import { lineCaseContextService, type CaseContextHint } from "../../services/LineCaseContextService";
+import type { PendingIntakeKind } from "../../domain/case/PendingIntake";
+import { lineImageAutoAttachService } from "../../services/LineImageAutoAttachService";
 
 const logger = createLogger("line-webhook");
 
@@ -625,6 +628,21 @@ export function registerLineWebhookRoutes(
                     // the case or describes the symptom; the confirmation
                     // handler / pending-image logic attach it then.
 
+                    // Just-opened case (operator decision 2026-09-17): a screenshot
+                    // within LINE_IMAGE_AUTO_ATTACH_MINUTES of the focus case's
+                    // creation is attached to it and the customer is told which
+                    // case it landed on. Anything else keeps the ask-first rule.
+                    const auto = await lineImageAutoAttachService.autoAttachStandaloneImage({
+                      conversationId: Number(convId),
+                      projectId: decision.projectId ?? null,
+                      idempotencyKey: webhookEventId || `image-${imageId}`,
+                      correlationId: webhookEventId,
+                    });
+                    if (auto.outcome === "attached" || auto.outcome === "pending_promotion") {
+                      logger.info({ convId, imageId, ticket: auto.ticketNumber, outcome: auto.outcome }, "Standalone image attached to the just-opened case");
+                      return;
+                    }
+
                     // Standalone image: mark attachment so if customer replies with a ticket number or explanation,
                     // we can attach it deterministically.
                     if (ingestedMessageId) {
@@ -889,6 +907,47 @@ export function registerLineWebhookRoutes(
               }
             }
 
+            // Flow 6 on LINE (2026-09-17): which case is this message about?
+            // The same CaseResolver the WebChat gateway uses decides at the
+            // edge. Ambiguity and closed-case references are answered here
+            // with chips (no AI turn); everything else continues with a hint
+            // beside the events for the AI gate. Never a reason to fail the
+            // turn: an error simply means no hint.
+            let caseContext: CaseContextHint | null = null;
+            // Set when the resolver stood down for a pending create-confirmation;
+            // the fast-path acknowledgement below picks its wording from it.
+            let pendingIntake: PendingIntakeKind | null = null;
+            if (!confirmationHandled && decision.conversationId && event?.type === "message" && event?.message?.type === "text") {
+              try {
+                const caseTurn = await lineCaseContextService.resolveTurn({
+                  conversationId: Number(decision.conversationId),
+                  projectId: decision.projectId ?? null,
+                  text: String(event.message.text || ""),
+                  correlationId: webhookEventId,
+                  externalMessageId: event?.message?.id ? String(event.message.id) : undefined,
+                });
+                caseContext = caseTurn.hint;
+                pendingIntake = caseTurn.pendingIntake ?? null;
+                // [เปิดเคสใหม่จากเรื่องนี้] (2026-09-18): the AI gate receives a
+                // report built from the closed case, not the chip text, so the
+                // summary card carries the old subject. The persisted row above
+                // keeps what the customer actually sent.
+                if (caseTurn.forwardText && event?.message) {
+                  event.message.text = caseTurn.forwardText;
+                }
+                logger.info(
+                  { webhookEventId, conversationId: decision.conversationId, handled: caseTurn.handled, reason: caseTurn.reason, intent: caseTurn.hint?.intent, ticket: caseTurn.hint?.ticketNumber },
+                  "Case context resolved"
+                );
+                if (caseTurn.handled) {
+                  processed += 1;
+                  continue;
+                }
+              } catch (caseErr: any) {
+                logger.error({ error: caseErr.message, webhookEventId }, "Case context resolution failed; continuing without a hint");
+              }
+            }
+
             // --- B-0: mint the server-owned execution context ---
             //
             // Created here, after signature verification and identity /
@@ -959,11 +1018,24 @@ export function registerLineWebhookRoutes(
                 /(?:ยืนยัน|ถูกต้อง|ถูกแล้ว|ใช่เลย|โอเค|ได้เลย|เปิดเคสเลย|จัดไป|ตามนั้น|ส่งรูป|นี่รูป|รูปปัญหา|ภาพปัญหา|แนบรูป|ยกเลิก|cancel|ไม่เอาแล้ว|ไม่ต้องแล้ว|ไม่แจ้งแล้ว|ช่างมัน|แก้ได้แล้ว|ทำได้แล้ว|รีเซ็ต|reset|พิมพ์ผิด|เปลี่ยนใจ|ไม่เป็นไรแล้ว|อย่าเพิ่งเปิด)/i.test(msgText) ||
                 /(?:^|\s|[.,!])(?:ใช่|ถูก|โอเค|ok|ได้|ครับ|ค่ะ|คับ|งับ|ฮะ|จ้า|เค|ยกเลิก|ไม่เอา|ไม่ต้อง)/i.test(msgText);
 
+              // The "ขอแก้ไขข้อมูล" chip, and the correction typed while the
+              // "which part to change?" question is out, get the short edit
+              // acknowledgement (2026-09-17). A chip/word that is itself an
+              // action ("ยกเลิก", "ยืนยัน") keeps the action acknowledgement.
+              const isEditChip = /^\s*ขอแก้ไขข้อมูล\s*$/.test(msgText);
+              const ackType: "acknowledgement" | "acknowledgement_action" | "acknowledgement_edit" = isEditChip
+                ? "acknowledgement_edit"
+                : isActionTurn
+                  ? "acknowledgement_action"
+                  : pendingIntake === "edit"
+                    ? "acknowledgement_edit"
+                    : "acknowledgement";
+
               const ackUserId = event?.source?.userId ? String(event.source.userId) : "";
               void customerNotificationService
                 .send({
                   conversationId: Number(decision.conversationId),
-                  notificationType: isActionTurn ? "acknowledgement_action" : "acknowledgement",
+                  notificationType: ackType,
                   idempotencyKey: webhookEventId,
                   projectId: decision.projectId ?? null,
                   correlationId: webhookEventId,
@@ -1011,6 +1083,7 @@ export function registerLineWebhookRoutes(
                   executionToken,
                   executionContextId,
                   correlationId: webhookEventId,
+                  caseContext,
                 }
               );
               // The 24-hour carousel recall push is sent immediately (not batched) —
@@ -1054,6 +1127,7 @@ export function registerLineWebhookRoutes(
                       // Plane promotion failed closed.
                       executionToken,
                       correlationId: webhookEventId || undefined,
+                      caseContext,
                     },
                   },
                   sequenceAt: new Date(),
@@ -1075,6 +1149,7 @@ export function registerLineWebhookRoutes(
                   // Plane promotion failed closed (403 EXECUTION_CONTEXT_REQUIRED).
                   executionToken,
                   correlationId: webhookEventId || undefined,
+                  caseContext,
                 });
               }
 

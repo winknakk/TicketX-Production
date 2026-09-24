@@ -1,9 +1,11 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { MessageSquare, ShieldCheck, Mail, Phone, Link, FolderKanban, Clock, X, Ticket } from 'lucide-react';
 import { DataState, PageHeader, SearchField, StatusBadge } from '../components/ui/Primitives';
 import { HandoffStatusBadge } from '../components/common/HandoffStatusBadge';
 import { CustomerEventTimeline } from '../components/common/CustomerEventTimeline';
 import type { CustomerTimelineEvent } from '../types/domain';
+import { useProject } from '../context/ProjectContext';
+import { apiFetch } from '../lib/apiFetch';
 
 interface Conversation {
   id: string;
@@ -28,7 +30,11 @@ interface CustomersProps {
 }
 
 export function Customers({ conversations, onOpenConversation, loading = false, error = null }: CustomersProps) {
+  const { activeProjectId } = useProject();
   const [search, setSearch] = useState('');
+  const [masterCustomers, setMasterCustomers] = useState<any[]>([]);
+  const [timelineEvents, setTimelineEvents] = useState<CustomerTimelineEvent[]>([]);
+  const [timelineLoading, setTimelineLoading] = useState<boolean>(false);
   const [selectedCustomer, setSelectedCustomer] = useState<{
     id: string;
     name: string;
@@ -37,6 +43,23 @@ export function Customers({ conversations, onOpenConversation, loading = false, 
     company?: string | null;
     rooms: Conversation[];
   } | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    apiFetch(`/api/v1/admin/master-data/customers?projectId=${encodeURIComponent(activeProjectId)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!isMounted) return;
+        if (data?.customers && Array.isArray(data.customers)) {
+          setMasterCustomers(data.customers);
+        }
+      })
+      .catch((err) => console.error('Failed to load master customers:', err));
+
+    return () => {
+      isMounted = false;
+    };
+  }, [activeProjectId]);
 
   const customers = useMemo(() => {
     const grouped = new Map<
@@ -51,21 +74,41 @@ export function Customers({ conversations, onOpenConversation, loading = false, 
       }
     >();
 
+    // First seed with registered master data customers
+    masterCustomers.forEach((mc) => {
+      const key = String(mc.id);
+      grouped.set(key, {
+        id: key,
+        name: mc.contact_name || mc.company_name || `Customer #${mc.id}`,
+        email: mc.email,
+        phone: mc.phone,
+        company: mc.company_name,
+        rooms: [],
+      });
+    });
+
+    // Then merge with conversation rooms
     conversations.forEach((conversation) => {
       const key =
         conversation.profile_id && conversation.profile_id !== 'unknown'
           ? conversation.profile_id
           : conversation.customer;
-      const record = grouped.get(key) || {
-        id: key,
-        name: conversation.profile_name || conversation.customer || 'Unknown customer',
-        email: conversation.profile_email,
-        phone: conversation.profile_phone,
-        company: conversation.company_name,
-        rooms: [],
-      };
-      record.rooms.push(conversation);
-      grouped.set(key, record);
+      const existing = grouped.get(key);
+      if (existing) {
+        existing.rooms.push(conversation);
+        if (!existing.email && conversation.profile_email) existing.email = conversation.profile_email;
+        if (!existing.phone && conversation.profile_phone) existing.phone = conversation.profile_phone;
+        if (!existing.company && conversation.company_name) existing.company = conversation.company_name;
+      } else {
+        grouped.set(key, {
+          id: key,
+          name: conversation.profile_name || conversation.customer || 'Unknown customer',
+          email: conversation.profile_email,
+          phone: conversation.profile_phone,
+          company: conversation.company_name,
+          rooms: [conversation],
+        });
+      }
     });
 
     return [...grouped.values()].filter((customer) =>
@@ -73,40 +116,48 @@ export function Customers({ conversations, onOpenConversation, loading = false, 
         .toLowerCase()
         .includes(search.toLowerCase())
     );
-  }, [conversations, search]);
+  }, [conversations, masterCustomers, search]);
 
-  // Generate sample timeline events for selected customer
-  const mockTimelineEvents = useMemo<CustomerTimelineEvent[]>(() => {
-    if (!selectedCustomer) return [];
-    const latestRoom = selectedCustomer.rooms[0];
+  useEffect(() => {
+    if (!selectedCustomer) {
+      setTimelineEvents([]);
+      return;
+    }
 
-    return [
-      {
-        id: 'ev-1',
-        profileId: selectedCustomer.id,
-        eventType: 'CONVERSATION_STARTED',
-        title: `Conversation Session #${latestRoom?.id || '101'} Started`,
-        description: `Customer connected via ${latestRoom?.channel?.toUpperCase() || 'LINE'} channel`,
-        timestamp: 'Just now',
-      },
-      {
-        id: 'ev-2',
-        profileId: selectedCustomer.id,
-        eventType: 'IDENTITY_BOUND',
-        title: `Identity Bound (${latestRoom?.channel?.toUpperCase() || 'LINE'})`,
-        description: `Channel ID linked to customer profile ${selectedCustomer.name}`,
-        timestamp: '2 hours ago',
-      },
-      {
-        id: 'ev-3',
-        profileId: selectedCustomer.id,
-        eventType: 'IDENTITY_VERIFIED',
-        title: 'Customer Profile Verified',
-        description: 'Verified via system account & PostgreSQL directory',
-        timestamp: '1 day ago',
-      },
-    ];
-  }, [selectedCustomer]);
+    let isMounted = true;
+    setTimelineLoading(true);
+
+    const customerId = selectedCustomer.id;
+    apiFetch(`/api/admin/customers/${encodeURIComponent(customerId)}/timeline?projectId=${encodeURIComponent(activeProjectId)}`)
+      .then((r) => (r.ok ? r.json() : { success: false, events: [] }))
+      .then((data) => {
+        if (!isMounted) return;
+        if (data && Array.isArray(data.events)) {
+          const mapped: CustomerTimelineEvent[] = data.events.map((ev: any) => ({
+            id: ev.id,
+            profileId: customerId,
+            eventType: ev.eventType || 'CONVERSATION_STARTED',
+            title: ev.title,
+            description: ev.description,
+            timestamp: ev.timestamp,
+          }));
+          setTimelineEvents(mapped);
+        } else {
+          setTimelineEvents([]);
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to load customer timeline:', err);
+        if (isMounted) setTimelineEvents([]);
+      })
+      .finally(() => {
+        if (isMounted) setTimelineLoading(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedCustomer, activeProjectId]);
 
   return (
     <div className="page-scroll space-y-6">
@@ -297,7 +348,20 @@ export function Customers({ conversations, onOpenConversation, loading = false, 
             </div>
 
             {/* Customer Event Timeline */}
-            <CustomerEventTimeline events={mockTimelineEvents} />
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+                  Customer Event Timeline
+                </p>
+                {timelineLoading && (
+                  <span className="flex items-center gap-1 text-[11px] text-muted-foreground font-medium">
+                    <Clock className="h-3 w-3 animate-spin text-primary" />
+                    Loading…
+                  </span>
+                )}
+              </div>
+              <CustomerEventTimeline events={timelineEvents} />
+            </div>
           </div>
         )}
       </div>

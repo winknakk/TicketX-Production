@@ -19,6 +19,8 @@ import { ConversationMemoryService } from "../../memory/ConversationMemoryServic
 import { pool } from "../../adapters/postgres/PostgresAdapter";
 import { S3MediaStorageService } from "../../media/services/S3MediaStorageService";
 import { createLogger } from "../../observability/logger";
+import { operationsFeedService } from "../../services/OperationsFeedService";
+import { customerTimelineService } from "../../services/CustomerTimelineService";
 
 export interface AdminRouteDependencies {
   metricAggregator: MetricAggregator;
@@ -133,7 +135,7 @@ export async function registerAdminRoutes(fastify: FastifyInstance, deps: AdminR
     // caller typed, so it constrained nothing. resolveProjectFilter checks it
     // against the authenticated principal instead, and bounds projectId=all
     // to the projects that principal may actually see.
-    const filter = resolveProjectFilter(request, reply, query?.projectId);
+    const filter = resolveProjectFilter(request, reply, query?.projectId ?? query?.tenantId);
     if (!filter) {
       return reply; // resolveProjectFilter already sent 400/403
     }
@@ -164,7 +166,7 @@ export async function registerAdminRoutes(fastify: FastifyInstance, deps: AdminR
 
       // Callers may still name a project explicitly; if they do it must match
       // the conversation's own project.
-      const requested = parseInt(String(query?.projectId), 10);
+      const requested = parseInt(String(query?.projectId ?? query?.tenantId), 10);
       if (Number.isInteger(requested) && requested > 0 && requested !== Number(owning.rows[0].project_id)) {
         return reply.code(404).send({
           error: "Not Found",
@@ -177,17 +179,34 @@ export async function registerAdminRoutes(fastify: FastifyInstance, deps: AdminR
   // 1. GET /api/v1/admin/metrics
   fastify.get("/api/v1/admin/metrics", async (request, reply) => {
     const query = request.query as any;
-    const tenantId = query.tenantId ? String(query.tenantId) : undefined;
-    const metrics = await deps.metricAggregator.getDashboardMetrics(tenantId);
+    const requestedProject = query?.projectId ?? query?.tenantId;
+    const filter = resolveProjectFilter(request, reply, requestedProject);
+    if (!filter) return reply;
+    const metrics = await deps.metricAggregator.getDashboardMetrics(filter.projectIds);
     return reply.code(200).send(metrics);
   });
 
   // 2. GET /api/v1/admin/traces
   fastify.get("/api/v1/admin/traces", async (request, reply) => {
     const query = request.query as any;
-    const tenantId = query.tenantId ? String(query.tenantId) : undefined;
-    const traces = await deps.metricAggregator.getConversationTraceSummaries(tenantId);
+    const requestedProject = query?.projectId ?? query?.tenantId;
+    const filter = resolveProjectFilter(request, reply, requestedProject);
+    if (!filter) return reply;
+    const limit = Math.min(Math.max(parseInt(String(query?.limit || "50"), 10) || 50, 1), 100);
+    const offset = Math.max(parseInt(String(query?.offset || "0"), 10) || 0, 0);
+    const traces = await deps.metricAggregator.getConversationTraceSummaries(filter.projectIds, { limit, offset });
     return reply.code(200).send(traces);
+  });
+
+  // 2b. GET /api/v1/admin/operations/events
+  fastify.get("/api/v1/admin/operations/events", async (request, reply) => {
+    const query = request.query as any;
+    const requestedProject = query?.projectId ?? query?.tenantId;
+    const filter = resolveProjectFilter(request, reply, requestedProject);
+    if (!filter) return reply;
+    const limit = Math.min(Math.max(parseInt(String(query?.limit || "20"), 10) || 20, 1), 50);
+    const events = await operationsFeedService.getRecentEvents(filter.projectIds, limit);
+    return reply.code(200).send({ success: true, events });
   });
 
   // 3. POST /api/v1/admin/knowledge/upload
@@ -849,35 +868,32 @@ export async function registerAdminRoutes(fastify: FastifyInstance, deps: AdminR
           handled_by: conv.handled_by || "ai"
         };
 
-        // 5. Generate dynamic AI summary from messages
-        let aiSummary = `Customer ${identity.profile_name} from ${company.name} has opened a new conversation room. No messages have been exchanged yet.`;
-        if (messages.length > 0) {
-          const customerMsgs = messages.filter((m: any) => m.role === "user" || m.role === "customer" || m.sender === "customer");
-          const lastMsg = messages[messages.length - 1];
+        // 5. Resolve genuine ticket AI summary (running_summary > last_ai_summary > summary)
+        let aiSummary: string | null = null;
+        let aiSummaryStatus: "AUTHENTIC_TICKET_SUMMARY" | "NOT_AVAILABLE" = "NOT_AVAILABLE";
 
-          const getSnippet = (msg: any) => {
-            const text = (msg.content || "").trim();
-            if (text) {
-              return text.length > 120 ? text.substring(0, 120) + '...' : text;
+        try {
+          const { pool } = require("../../adapters/postgres/PostgresAdapter");
+          const convIdNum = parseInt(String(conversationId), 10);
+          const activeTicketId = conv.active_ticket_id ? parseInt(String(conv.active_ticket_id), 10) : null;
+          const summaryQuery = `
+            SELECT id, running_summary, last_ai_summary, summary
+            FROM tickets
+            WHERE (id = $1::integer OR (conversation_id = $2::integer AND deleted_at IS NULL))
+            ORDER BY (id = $1::integer) DESC, id DESC
+            LIMIT 1
+          `;
+          const summaryRes = await pool.query(summaryQuery, [activeTicketId, convIdNum]);
+          if (summaryRes.rows.length > 0) {
+            const ticketRow = summaryRes.rows[0];
+            const candidate = ticketRow.running_summary || ticketRow.last_ai_summary || ticketRow.summary;
+            if (candidate && typeof candidate === "string" && candidate.trim().length > 0) {
+              aiSummary = candidate.trim();
+              aiSummaryStatus = "AUTHENTIC_TICKET_SUMMARY";
             }
-            if (msg.attachments && msg.attachments.length > 0) {
-              return '[Attachment]';
-            }
-            if (msg.message_type === 'image' || msg.messageType === 'image') {
-              return '[Image]';
-            }
-            return '(no text content)';
-          };
-
-          const firstMsg = customerMsgs.length > 0 ? customerMsgs[0] : messages[0];
-          const questionText = getSnippet(firstMsg);
-
-          aiSummary = `${identity.profile_name} from ${company.name} reached out regarding: "${questionText}".`;
-          if (lastMsg) {
-            const senderLabel = lastMsg.role === "user" || lastMsg.role === "customer" || lastMsg.sender === "customer" ? "Customer" : "AI/Operator";
-            const lastText = getSnippet(lastMsg);
-            aiSummary += ` The latest update was from the ${senderLabel}: "${lastText}".`;
           }
+        } catch (sumErr: any) {
+          logger.warn({ error: sumErr.message, conversationId }, "Failed to resolve genuine ticket summary");
         }
 
         // 6. Customer 360 Evolution (Previous conversations, Ticket history, Customer activity summary)
@@ -1012,6 +1028,7 @@ export async function registerAdminRoutes(fastify: FastifyInstance, deps: AdminR
           project,
           statistics,
           ai_summary: aiSummary,
+          ai_summary_status: aiSummaryStatus,
           previous_conversations: previousConversations,
           ticket_history: ticketHistory,
           customer_activity_summary: customerActivitySummary,
@@ -1036,6 +1053,35 @@ export async function registerAdminRoutes(fastify: FastifyInstance, deps: AdminR
       const tickets = await deps.dbAdapter.listAllTickets(params.id, projectId, undefined, undefined, request.tenantContext);
       return reply.code(200).send(tickets);
     });
+
+    // 12. GET /api/admin/customers/:id/timeline
+    const customerTimelineHandler = async (request: any, reply: any) => {
+      const params = request.params as any;
+      const query = request.query as any;
+      const requestedProject = query?.projectId ?? query?.tenantId;
+      const filter = resolveProjectFilter(request, reply, requestedProject);
+      if (!filter) return reply;
+
+      const limit = Math.min(Math.max(parseInt(String(query?.limit || "30"), 10) || 30, 1), 50);
+      const offset = Math.max(parseInt(String(query?.offset || "0"), 10) || 0, 0);
+
+      const events = await customerTimelineService.getCustomerTimeline(
+        String(params.id),
+        filter.projectIds,
+        limit,
+        offset
+      );
+
+      return reply.code(200).send({
+        success: true,
+        customerId: params.id,
+        limit,
+        offset,
+        events,
+      });
+    };
+    fastify.get("/api/admin/customers/:id/timeline", customerTimelineHandler);
+    fastify.get("/api/v1/admin/customers/:id/timeline", customerTimelineHandler);
 
     // Outbox dead letters.
     //

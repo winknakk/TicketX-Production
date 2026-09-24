@@ -1,6 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { GitMerge } from 'lucide-react';
 import { useConversation } from '../../context/ConversationContext';
 import { InlineAlert } from '../ui/Primitives';
+import { MergeTicketModal } from '../tickets/MergeTicketModal';
 
 export const TicketPanel: React.FC = () => {
   const {
@@ -16,8 +18,11 @@ export const TicketPanel: React.FC = () => {
     setTicketPriority,
     handleCreateTicket,
     handlePromoteTicket,
-    profileData
+    profileData,
+    fetchProfile
   } = useConversation();
+
+  const [mergeTargetTicket, setMergeTargetTicket] = useState<any | null>(null);
 
   const selectedPriorityMeta = profileData?.project?.priorities?.find((p: any) => p.code === ticketPriority);
 
@@ -123,6 +128,16 @@ export const TicketPanel: React.FC = () => {
                     {isPromotingTicket === dbId ? 'Promoting...' : '🚀 Promote to Plane'}
                   </button>
                 )}
+
+                {/* Merge Ticket Action */}
+                <button
+                  type="button"
+                  onClick={() => setMergeTargetTicket(t)}
+                  className="w-full mt-1.5 py-1.5 border border-border bg-muted/30 text-muted-foreground hover:text-foreground font-semibold text-xs rounded-lg shadow-xs hover:bg-muted transition flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <GitMerge className="h-3.5 w-3.5 text-primary" />
+                  <span>Merge Duplicate Ticket...</span>
+                </button>
               </div>
             );
           })
@@ -202,6 +217,23 @@ export const TicketPanel: React.FC = () => {
           </button>
         </form>
       </div>
+
+      {/* Merge Ticket Modal */}
+      {mergeTargetTicket && (
+        <MergeTicketModal
+          sourceTicket={{
+            id: mergeTargetTicket.id1 || mergeTargetTicket.id,
+            ticketId: mergeTargetTicket.ticketId || mergeTargetTicket.ticket_id || mergeTargetTicket.id,
+            subject: mergeTargetTicket.subject || 'Ticket',
+          }}
+          candidateTickets={profileData?.ticket_history || []}
+          onClose={() => setMergeTargetTicket(null)}
+          onMerged={() => {
+            setMergeTargetTicket(null);
+            if (selectedConvId) fetchProfile(selectedConvId);
+          }}
+        />
+      )}
     </div>
   );
 };

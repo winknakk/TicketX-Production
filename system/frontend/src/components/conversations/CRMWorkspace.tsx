@@ -2,6 +2,7 @@ import React, { useEffect } from 'react';
 import { Mail, Phone, Sparkles, Building2, FolderKanban, Activity, ChevronRight, X } from 'lucide-react';
 import { useConversation } from '../../context/ConversationContext';
 import { TicketPanel } from './TicketPanel';
+import { InternalNotesTab } from './InternalNotesTab';
 import { cn } from '../../lib/utils';
 import { DataState, IconButton } from '../ui/Primitives';
 
@@ -123,13 +124,27 @@ export const CRMWorkspace: React.FC<{ className?: string; onClose?: () => void }
 
           {/* 2. AI Generated Summary */}
           <div className="border-b border-border pb-5 space-y-2">
-            <div className="flex items-center gap-1.5 text-foreground font-bold text-xs">
-              <Sparkles className="h-3.5 w-3.5 text-primary" />
-              <span>AI Case Summary</span>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5 text-foreground font-bold text-xs">
+                <Sparkles className="h-3.5 w-3.5 text-primary" />
+                <span>AI Case Summary</span>
+              </div>
+              {profileData.ai_summary && (
+                <span className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 px-1.5 py-0.5 rounded border border-emerald-200 dark:border-emerald-800">
+                  Authentic Ticket
+                </span>
+              )}
             </div>
             <div className="bg-muted/50 border border-border rounded-xl p-3 space-y-1.5">
               {(() => {
                 const raw = profileData.ai_summary || '';
+                if (!raw) {
+                  return (
+                    <p className="text-[11.5px] text-muted-foreground italic leading-relaxed">
+                      No active ticket summary recorded yet. AI will generate an authentic summary once customer case issues are identified.
+                    </p>
+                  );
+                }
                 // Split by newline, period+space, or bullet markers
                 const lines = raw
                   .split(/\n|(?<=\.)\s+(?=[A-Z\u0E00-\u0E7F])/)
@@ -270,6 +285,16 @@ export const CRMWorkspace: React.FC<{ className?: string; onClose?: () => void }
 
       {/* Ticket Panel */}
       <TicketPanel />
+
+      {/* Internal Operator Notes */}
+      {activeTicket && (
+        <div className="border-t border-border pt-4">
+          <InternalNotesTab
+            ticketId={activeTicket.id1 || activeTicket.id || activeTicket.ticketId || null}
+            projectId={profileData?.project?.id || null}
+          />
+        </div>
+      )}
 
       {/* 5. Activity Timeline */}
       <div className="space-y-3 pt-2">

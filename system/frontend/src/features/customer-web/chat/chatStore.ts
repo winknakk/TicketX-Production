@@ -14,6 +14,9 @@ import type {
   CustomerChatMessage,
   CustomerMessageAttachment,
   CustomerSystemNotice,
+  CustomerTicket,
+  CustomerCancellationState,
+  CustomerWorkflowState,
 } from '../types';
 
 export interface ChatState {
@@ -22,6 +25,18 @@ export interface ChatState {
   /** True while an operator holds the conversation. */
   isHumanTakeover: boolean;
   conversationId: string | null;
+  /** Currently focused ticket in the conversation session */
+  activeTicket: CustomerTicket | null;
+  /** List of customer tickets available for selection */
+  availableTickets: CustomerTicket[];
+  /** Typed customer cancellation flow state */
+  cancellationState: CustomerCancellationState;
+  /** Dev-CS / Customer workflow interaction state */
+  customerWorkflowState: CustomerWorkflowState;
+  /** Canonical request detail when waiting for customer */
+  waitingRequestDetail?: string;
+  /** Pending action identifier */
+  pendingAction: string | null;
 }
 
 export const initialChatState: ChatState = {
@@ -29,6 +44,12 @@ export const initialChatState: ChatState = {
   isTyping: false,
   isHumanTakeover: false,
   conversationId: null,
+  activeTicket: null,
+  availableTickets: [],
+  cancellationState: { status: 'IDLE' },
+  customerWorkflowState: 'NORMAL',
+  waitingRequestDetail: undefined,
+  pendingAction: null,
 };
 
 export type ChatAction =
@@ -41,6 +62,15 @@ export type ChatAction =
   | { type: 'TYPING'; isTyping: boolean }
   | { type: 'TAKEOVER'; event: 'started' | 'released'; at: string }
   | { type: 'NOTICE'; notice: CustomerSystemNotice }
+  | { type: 'SET_ACTIVE_TICKET'; ticket: CustomerTicket | null }
+  | { type: 'SET_AVAILABLE_TICKETS'; tickets: CustomerTicket[] }
+  | { type: 'CANCEL_REQUESTED'; ticketNumber: string; ticketId?: number | string }
+  | { type: 'CANCEL_CONFIRMED'; message?: string }
+  | { type: 'CANCEL_DECLINED'; message?: string }
+  | { type: 'CANCEL_FAILED'; error: string }
+  | { type: 'SET_WORKFLOW_STATE'; state: CustomerWorkflowState; detail?: string }
+  | { type: 'SET_PENDING_ACTION'; action: string | null }
+  | { type: 'TICKET_UPDATED'; ticketId: number | string; status: string; ticketNumber?: string; detail?: string }
   | { type: 'RESET' };
 
 function isChat(entry: CustomerChatEntry): entry is CustomerChatMessage {
@@ -183,6 +213,26 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
     case 'MESSAGE_RECEIVED': {
       const incoming = action.message;
+
+      // Reject a message that belongs to a different conversation.
+      //
+      // A conversation belongs to exactly one project, so this is the project
+      // boundary in the client. It matters because outbound is also delivered to
+      // the identity-scoped `recipient:<channelRef>` room, and one identity
+      // legitimately spans several projects — so after switching to project B a
+      // socket still receives project A's messages.
+      //
+      // Only enforced when BOTH sides are known: a payload without a
+      // conversation id (older gateway build) is kept rather than silently
+      // dropped, and nothing is filtered before the transcript has loaded.
+      if (
+        state.conversationId &&
+        incoming.conversationId &&
+        String(incoming.conversationId) !== String(state.conversationId)
+      ) {
+        return state;
+      }
+
       const identity = identityOf(incoming);
 
       if (state.entries.some((e) => isChat(e) && identityOf(e) === identity)) {
@@ -308,6 +358,151 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case 'NOTICE': {
       if (state.entries.some((e) => e.kind === 'system' && e.id === action.notice.id)) return state;
       return { ...state, entries: [...state.entries, action.notice] };
+    }
+
+    case 'SET_ACTIVE_TICKET': {
+      const ticket = action.ticket;
+      console.log('[chatStore] SET_ACTIVE_TICKET:', ticket?.id, ticket?.ticket_number);
+      const isWaiting = ticket?.status?.toUpperCase() === 'WAITING_CUSTOMER';
+      const isClosed = ['CLOSED', 'CANCELLED'].includes(ticket?.status?.toUpperCase() || '');
+      return {
+        ...state,
+        activeTicket: ticket,
+        customerWorkflowState: isWaiting
+          ? 'WAITING_FOR_CUSTOMER'
+          : isClosed
+            ? 'CLOSED'
+            : state.customerWorkflowState === 'WAITING_FOR_CUSTOMER'
+              ? 'NORMAL'
+              : state.customerWorkflowState,
+        waitingRequestDetail: isWaiting ? ticket?.summary || state.waitingRequestDetail : state.waitingRequestDetail,
+      };
+    }
+
+    case 'SET_AVAILABLE_TICKETS': {
+      let updatedActive = state.activeTicket;
+      if (updatedActive) {
+        const found = action.tickets.find((t) => String(t.id) === String(updatedActive?.id));
+        if (found) {
+          updatedActive = found;
+        }
+      }
+      return {
+        ...state,
+        availableTickets: action.tickets,
+        activeTicket: updatedActive,
+      };
+    }
+
+    case 'CANCEL_REQUESTED': {
+      return {
+        ...state,
+        cancellationState: {
+          status: 'PENDING',
+          ticketNumber: action.ticketNumber,
+          ticketId: action.ticketId,
+          error: undefined,
+        },
+      };
+    }
+
+    case 'CANCEL_CONFIRMED': {
+      const num = state.cancellationState.ticketNumber || (state.activeTicket?.ticket_number ? String(state.activeTicket.ticket_number) : '');
+      const confirmNotice: CustomerSystemNotice = {
+        kind: 'system',
+        id: `system:cancel:confirmed:${Date.now()}`,
+        code: 'cancel_confirmed',
+        text: action.message || `รับเรื่องยกเลิกเคส ${num} แล้วค่ะ`,
+        createdAt: new Date().toISOString(),
+        tone: 'info',
+      };
+      return {
+        ...state,
+        cancellationState: {
+          ...state.cancellationState,
+          status: 'CONFIRMED',
+          error: undefined,
+        },
+        customerWorkflowState: 'CLOSED',
+        entries: [...state.entries, confirmNotice],
+      };
+    }
+
+    case 'CANCEL_DECLINED': {
+      const num = state.cancellationState.ticketNumber || (state.activeTicket?.ticket_number ? String(state.activeTicket.ticket_number) : '');
+      const declineNotice: CustomerSystemNotice = {
+        kind: 'system',
+        id: `system:cancel:declined:${Date.now()}`,
+        code: 'cancel_declined',
+        text: action.message || `ยกเลิกการยืนยันค่ะ เคส ${num} ยังดำเนินการต่อ`,
+        createdAt: new Date().toISOString(),
+        tone: 'info',
+      };
+      return {
+        ...state,
+        cancellationState: {
+          ...state.cancellationState,
+          status: 'DECLINED',
+          error: undefined,
+        },
+        entries: [...state.entries, declineNotice],
+      };
+    }
+
+    case 'CANCEL_FAILED': {
+      return {
+        ...state,
+        cancellationState: {
+          ...state.cancellationState,
+          error: action.error,
+        },
+      };
+    }
+
+    case 'SET_WORKFLOW_STATE': {
+      return {
+        ...state,
+        customerWorkflowState: action.state,
+        waitingRequestDetail: action.detail !== undefined ? action.detail : state.waitingRequestDetail,
+      };
+    }
+
+    case 'SET_PENDING_ACTION': {
+      return {
+        ...state,
+        pendingAction: action.action,
+      };
+    }
+
+    case 'TICKET_UPDATED': {
+      const { ticketId, status, ticketNumber, detail } = action;
+      const st = String(status || '').toUpperCase();
+      const updatedList = state.availableTickets.map((t) =>
+        String(t.id) === String(ticketId) ? { ...t, status: st } : t
+      );
+      let updatedActive = state.activeTicket;
+      let newWorkflowState = state.customerWorkflowState;
+      let waitingDetail = state.waitingRequestDetail;
+
+      if (updatedActive && (String(updatedActive.id) === String(ticketId) || updatedActive.ticket_number === ticketNumber)) {
+        updatedActive = { ...updatedActive, status: st };
+        if (st === 'WAITING_CUSTOMER') {
+          newWorkflowState = 'WAITING_FOR_CUSTOMER';
+          if (detail) waitingDetail = detail;
+        } else if (st === 'CLOSED' || st === 'CANCELLED') {
+          newWorkflowState = 'CLOSED';
+        } else if (newWorkflowState === 'WAITING_FOR_CUSTOMER') {
+          newWorkflowState = 'NORMAL';
+        }
+      }
+
+      return {
+        ...state,
+        availableTickets: updatedList,
+        activeTicket: updatedActive,
+        customerWorkflowState: newWorkflowState,
+        waitingRequestDetail: waitingDetail,
+      };
     }
 
     case 'RESET':

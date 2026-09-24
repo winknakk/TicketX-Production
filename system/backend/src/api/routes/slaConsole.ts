@@ -3,8 +3,9 @@ import path from "node:path";
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { config } from "../../config/env";
 import { createLogger } from "../../observability/logger";
-import { resolveProjectFilter } from "../../middleware/tenantScope";
+import { resolveProjectFilter, canAccessProject } from "../../middleware/tenantScope";
 import { SLACadenceService } from "../../services/SLACadenceService";
+import { auditService } from "../../services/AuditService";
 
 const logger = createLogger("sla-console");
 
@@ -22,13 +23,37 @@ function consolePagePath(): string {
   return path.resolve(__dirname, "../../../assets/sla-console/index.html");
 }
 
-async function requireConfiguredAdminApiKey(_request: FastifyRequest, reply: FastifyReply): Promise<void> {
+const SUPER_ADMIN_ROLES = new Set(["super_admin", "superadmin"]);
+
+/**
+ * Who may use the console API: the service key (the standalone console page)
+ * or a signed-in super_admin (the control panel inside the product SLA
+ * Center). Every other operator role is refused — these endpoints read across
+ * projects and, for writes, change tickets and send real messages.
+ */
+export function isSlaConsolePrincipal(request: FastifyRequest): boolean {
+  const principal = request.principal;
+  if (!principal) return false;
+  if (principal.kind === "service") return true;
+  return principal.kind === "operator" && SUPER_ADMIN_ROLES.has(String(principal.role || "").toLowerCase());
+}
+
+async function requireSlaConsoleAccess(request: FastifyRequest, reply: FastifyReply): Promise<void> {
   if (!config.API_KEY) {
-    await reply.code(503).send({ error: "SLA console API is disabled until API_KEY is configured" });
+    await reply.code(503).send({ success: false, error: "SLA console API is disabled until API_KEY is configured" });
+    return;
+  }
+  if (!isSlaConsolePrincipal(request)) {
+    logger.warn({ url: request.url, principal: request.principal?.subject, role: request.principal?.role }, "SLA console access refused");
+    await reply.code(403).send({ success: false, code: "SUPER_ADMIN_REQUIRED", error: "SLA controls require the service key or a super_admin session" });
   }
 }
 
-const adminRouteOptions = { preHandler: requireConfiguredAdminApiKey };
+const adminRouteOptions = { preHandler: requireSlaConsoleAccess };
+/** The tenant-scoped overview is readable by any signed-in operator. */
+const overviewRouteOptions = { preHandler: async (_request: FastifyRequest, reply: FastifyReply) => {
+  if (!config.API_KEY) await reply.code(503).send({ success: false, error: "SLA console API is disabled until API_KEY is configured" });
+} };
 
 function writesGuard(body: any, reply: FastifyReply): boolean {
   if (!SLACadenceService.consoleWritesAllowed()) {
@@ -68,7 +93,7 @@ export function registerSlaConsoleRoutes(fastify: FastifyInstance, cadence: SLAC
   fastify.get("/api/v1/admin/sla/tickets", adminRouteOptions, async (request, reply) => {
     const q = (request.query || {}) as any;
     const data = await cadence.listTickets({
-      scope: ["cadence", "open", "closed", "all"].includes(String(q.scope)) ? q.scope : "cadence",
+      scope: ["cadence", "open", "closed", "all", "deleted"].includes(String(q.scope)) ? q.scope : "cadence",
       priority: q.priority ? String(q.priority) : undefined,
       channel: q.channel ? String(q.channel).toLowerCase() : undefined,
       projectId: q.projectId ? Number(q.projectId) : undefined,
@@ -88,12 +113,14 @@ export function registerSlaConsoleRoutes(fastify: FastifyInstance, cadence: SLAC
    * middleware: an operator session only ever sees the projects it may
    * access, even when it asks for "all".
    */
-  fastify.get("/api/v1/admin/sla/overview", adminRouteOptions, async (request, reply) => {
+  fastify.get("/api/v1/admin/sla/overview", overviewRouteOptions, async (request, reply) => {
     const requested = (request.query as any)?.projectId;
     const filter = resolveProjectFilter(request, reply, requested);
     if (!filter) return;
     try {
       const data = await cadence.getOverview(filter.projectIds);
+      // Tells the page whether to offer the control panel at all.
+      (data as any).viewer = { canControl: isSlaConsolePrincipal(request), writesAllowed: SLACadenceService.consoleWritesAllowed() };
       return reply.send({ success: true, data });
     } catch (err: any) {
       logger.error({ error: err.message, requested }, "SLA overview failed");
@@ -105,6 +132,9 @@ export function registerSlaConsoleRoutes(fastify: FastifyInstance, cadence: SLAC
     const ref = String((request.params as any).ref || "");
     const data = await cadence.inspectTicket(ref);
     if (!data) return reply.code(404).send({ success: false, error: "Ticket not found" });
+    if (!canAccessProject(request, (data as any).project_id)) {
+      return reply.code(403).send({ success: false, error: "Access to ticket is not authorized" });
+    }
     return reply.send({ success: true, data });
   });
 
@@ -115,36 +145,106 @@ export function registerSlaConsoleRoutes(fastify: FastifyInstance, cadence: SLAC
     if (!dryRun && !writesGuard(body, reply)) return;
     try {
       const result = await cadence.runNow({ dryRun });
+      if (!dryRun) {
+        await auditService.record({
+          projectId: null,
+          action: "SLA_RUN",
+          actor: request.principal?.subject || "operator",
+          newValue: { dryRun, processed: (result as any)?.processed ?? 0 },
+        });
+      }
       return reply.send({ success: true, data: { ...result, dryRun } });
     } catch (err: any) {
-      // Surface the real cause (e.g. a database constraint) instead of a bare
-      // 500 — the console shows this text to the operator.
       logger.error({ error: err.message, dryRun }, "SLA console run failed");
       return reply.code(500).send({ success: false, error: `Cadence run failed: ${err.message}` });
+    }
+  });
+
+  fastify.post("/api/v1/admin/sla/tickets/bulk", adminRouteOptions, async (request, reply) => {
+    const body = (request.body || {}) as any;
+    if (!writesGuard(body, reply)) return;
+    const action = String(body.action || "");
+    if (!(SLACadenceService.BULK_ACTIONS as readonly string[]).includes(action)) {
+      return reply.code(400).send({ success: false, error: `Unknown bulk action "${action}"` });
+    }
+    const refs = Array.isArray(body.refs) ? body.refs.map((r: unknown) => String(r)) : [];
+    try {
+      const result = await cadence.bulkTicketAction(refs, action as any, body.reason);
+      if (!result.ok) return reply.code(400).send({ success: false, data: result, error: result.reason });
+
+      await auditService.record({
+        projectId: null,
+        action: "SLA_BULK_ACTION",
+        actor: request.principal?.subject || "operator",
+        newValue: { action, count: refs.length, succeeded: result.succeeded, reason: body.reason },
+      });
+
+      return reply.send({ success: true, data: result });
+    } catch (err: any) {
+      logger.error({ error: err.message, action, count: refs.length }, "SLA console bulk action failed");
+      return reply.code(500).send({ success: false, error: `Bulk action failed: ${err.message}` });
     }
   });
 
   fastify.post("/api/v1/admin/sla/tickets/:ref/shift-clock", adminRouteOptions, async (request, reply) => {
     const body = (request.body || {}) as any;
     if (!writesGuard(body, reply)) return;
-    const result = await cadence.shiftTicketClock(String((request.params as any).ref || ""), Number(body.minutes ?? 61));
+    const ref = String((request.params as any).ref || "");
+    const ticketInfo = await cadence.inspectTicket(ref);
+    if (!ticketInfo) return reply.code(404).send({ success: false, error: "Ticket not found" });
+    if (!canAccessProject(request, (ticketInfo as any).project_id)) {
+      return reply.code(403).send({ success: false, error: "Access to ticket is not authorized" });
+    }
+
+    const minutes = Number(body.minutes ?? 61);
+    const result = await cadence.shiftTicketClock(ref, minutes);
+    if (result.ok) {
+      await auditService.record({
+        projectId: Number((ticketInfo as any).project_id),
+        action: "SLA_SHIFT_CLOCK",
+        actor: request.principal?.subject || "operator",
+        newValue: { ref, minutes },
+      });
+    }
     return reply.code(result.ok ? 200 : 400).send({ success: result.ok, data: result });
   });
 
   fastify.post("/api/v1/admin/sla/tickets/:ref/force", adminRouteOptions, async (request, reply) => {
     const body = (request.body || {}) as any;
     if (!writesGuard(body, reply)) return;
+    const ref = String((request.params as any).ref || "");
+    const ticketInfo = await cadence.inspectTicket(ref);
+    if (!ticketInfo) return reply.code(404).send({ success: false, error: "Ticket not found" });
+    if (!canAccessProject(request, (ticketInfo as any).project_id)) {
+      return reply.code(403).send({ success: false, error: "Access to ticket is not authorized" });
+    }
+
     const kind = body.kind === "user" ? "user" : "dev";
-    const result = await cadence.forceTestSend(String((request.params as any).ref || ""), kind);
+    const result = await cadence.forceTestSend(ref, kind);
     return reply.code(result.ok ? 200 : 400).send({ success: result.ok, data: result });
   });
 
   fastify.post("/api/v1/admin/sla/tickets/:ref/close", adminRouteOptions, async (request, reply) => {
     const body = (request.body || {}) as any;
     if (!writesGuard(body, reply)) return;
+    const ref = String((request.params as any).ref || "");
+    const ticketInfo = await cadence.inspectTicket(ref);
+    if (!ticketInfo) return reply.code(404).send({ success: false, error: "Ticket not found" });
+    if (!canAccessProject(request, (ticketInfo as any).project_id)) {
+      return reply.code(403).send({ success: false, error: "Access to ticket is not authorized" });
+    }
+
     const mode = body.mode === "closed" ? "closed" : "cancelled";
     try {
-      const result = await cadence.closeTicket(String((request.params as any).ref || ""), mode, body.reason);
+      const result = await cadence.closeTicket(ref, mode, body.reason);
+      if (result.ok) {
+        await auditService.record({
+          projectId: Number((ticketInfo as any).project_id),
+          action: mode === "closed" ? "SLA_CLOSE" : "SLA_CANCEL",
+          actor: request.principal?.subject || "operator",
+          newValue: { ref, mode, reason: body.reason },
+        });
+      }
       return reply.code(result.ok ? 200 : 400).send({ success: result.ok, data: result, error: result.ok ? undefined : result.reason });
     } catch (err: any) {
       logger.error({ error: err.message, mode }, "SLA console close failed");
@@ -156,8 +256,23 @@ export function registerSlaConsoleRoutes(fastify: FastifyInstance, cadence: SLAC
   fastify.post("/api/v1/admin/sla/tickets/:ref/deliver", adminRouteOptions, async (request, reply) => {
     const body = (request.body || {}) as any;
     if (!writesGuard(body, reply)) return;
+    const ref = String((request.params as any).ref || "");
+    const ticketInfo = await cadence.inspectTicket(ref);
+    if (!ticketInfo) return reply.code(404).send({ success: false, error: "Ticket not found" });
+    if (!canAccessProject(request, (ticketInfo as any).project_id)) {
+      return reply.code(403).send({ success: false, error: "Access to ticket is not authorized" });
+    }
+
     try {
-      const result = await cadence.deliverToCustomer(String((request.params as any).ref || ""));
+      const result = await cadence.deliverToCustomer(ref);
+      if (result.ok) {
+        await auditService.record({
+          projectId: Number((ticketInfo as any).project_id),
+          action: "SLA_DELIVER",
+          actor: request.principal?.subject || "operator",
+          newValue: { ref },
+        });
+      }
       return reply.code(result.ok ? 200 : 400).send({ success: result.ok, data: result, error: result.ok ? undefined : `${result.reason}${(result as any).detail ? " · " + (result as any).detail : ""}` });
     } catch (err: any) {
       logger.error({ error: err.message }, "SLA console deliver failed");
@@ -168,7 +283,22 @@ export function registerSlaConsoleRoutes(fastify: FastifyInstance, cadence: SLAC
   fastify.post("/api/v1/admin/sla/tickets/:ref/reset", adminRouteOptions, async (request, reply) => {
     const body = (request.body || {}) as any;
     if (!writesGuard(body, reply)) return;
-    const result = await cadence.resetTicketTestData(String((request.params as any).ref || ""));
+    const ref = String((request.params as any).ref || "");
+    const ticketInfo = await cadence.inspectTicket(ref);
+    if (!ticketInfo) return reply.code(404).send({ success: false, error: "Ticket not found" });
+    if (!canAccessProject(request, (ticketInfo as any).project_id)) {
+      return reply.code(403).send({ success: false, error: "Access to ticket is not authorized" });
+    }
+
+    const result = await cadence.resetTicketTestData(ref);
+    if (result.ok) {
+      await auditService.record({
+        projectId: Number((ticketInfo as any).project_id),
+        action: "SLA_RESET",
+        actor: request.principal?.subject || "operator",
+        newValue: { ref },
+      });
+    }
     return reply.code(result.ok ? 200 : 400).send({ success: result.ok, data: result });
   });
 }
